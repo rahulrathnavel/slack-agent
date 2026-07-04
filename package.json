@@ -1,0 +1,47 @@
+{
+  "name": "pioltppt",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PioltPPT turns Slack context, web research, and user notes into editable live presentation websites.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "manifest": "tsx src/slack/manifest.ts",
+    "mcp:stdio": "tsx src/mcp/stdio.ts"
+  },
+  "keywords": [
+    "slack",
+    "agent",
+    "mcp",
+    "presentations",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.2",
+    "@slack/bolt": "^4.4.0",
+    "@slack/web-api": "^7.10.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "nanoid": "^5.1.6",
+    "pino": "^10.1.0",
+    "pino-http": "^11.0.0",
+    "sanitize-filename": "^1.6.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.62.1",
+    "vitest": "^4.0.13"
+  }
+}
