@@ -447,6 +447,3 @@ Focus areas:
 - Better source citation display.
 - Persistent storage beyond local disk.
 
-## License
-
-MIT
