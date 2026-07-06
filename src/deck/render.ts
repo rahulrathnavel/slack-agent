@@ -273,15 +273,15 @@ function chooseAsset(slide: SlidePlan, assets: DeckAsset[], index: number): Deck
     return undefined;
   }
   const query = (slide.imageQuery || slide.visualPrompt || slide.title).toLowerCase();
-  return (
-    assets.find((asset) => {
-      const haystack = `${asset.title} ${asset.creator ?? ""} ${asset.source ?? ""}`.toLowerCase();
-      return query
-        .split(/\W+/)
-        .filter((word) => word.length > 3)
-        .some((word) => haystack.includes(word));
-    }) ?? assets[index % assets.length]
-  );
+  const queryWords = query.split(/\W+/).filter((word) => word.length > 3);
+  if (!queryWords.length) {
+    return undefined;
+  }
+
+  return assets.find((asset) => {
+    const haystack = `${asset.title} ${asset.creator ?? ""} ${asset.source ?? ""}`.toLowerCase();
+    return queryWords.some((word) => haystack.includes(word));
+  });
 }
 
 function escapeHtml(value: string): string {

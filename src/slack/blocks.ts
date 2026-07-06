@@ -107,7 +107,6 @@ export function deckWizardModal(metadata: {
           initial_options: [
             checkboxOption("Use Slack context", "slack_context"),
             checkboxOption("Use web research", "web_research"),
-            checkboxOption("Use licensed images", "licensed_images"),
             checkboxOption("Include source citations", "citations"),
             checkboxOption("Speaker notes", "speaker_notes")
           ],

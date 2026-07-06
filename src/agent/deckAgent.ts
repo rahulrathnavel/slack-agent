@@ -211,7 +211,10 @@ Rules:
 - Exactly ${request.slideCount} slides.
 - Slide 1 must work as the title slide.
 - Last slide must be a closing or action slide.
-- Make bullets executive-readable: short, concrete, non-generic.
+- Make bullets presentation-ready: short, concrete, non-generic.
+- Never write instructions to the presenter as slide bullets.
+- Never use placeholders such as "explain", "define", "add examples", "insert", "verify facts", or "[Name]" as visible slide content.
+- For broad abstract topics, create a polished educational/business overview with useful principles, examples, and takeaways.
 - Use citations only from the source URLs provided below.
 - If sources are thin, say so in speaker notes and avoid invented facts.
 - If licensed assets are available, include imageQuery values that match them.
@@ -384,6 +387,69 @@ function createFallbackPlan(request: DeckRequest, sources: ResearchSource[]): De
 }
 
 function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] {
+  if (isLoveTopic(topic)) {
+    return [
+      {
+        title: "What Love Means",
+        layout: "bullets" as const,
+        bullets: [
+          "A durable bond built through care, respect, trust, and responsibility",
+          "More than emotion: love is shown through consistent choices and behavior",
+          "Healthy love supports dignity, safety, growth, and honest communication"
+        ],
+        visualPrompt: "Minimal abstract visual of connection and trust",
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Forms Of Love",
+        layout: "bullets" as const,
+        bullets: [
+          "Family love: protection, belonging, and long-term support",
+          "Friendship: loyalty, empathy, shared values, and mutual respect",
+          "Romantic love: commitment, vulnerability, partnership, and emotional maturity",
+          "Self-respect: boundaries, self-care, and the ability to give without losing oneself"
+        ],
+        visualPrompt: "Clean relationship map with four categories",
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Why Love Matters",
+        layout: "bullets" as const,
+        bullets: [
+          "Builds trust and emotional resilience in relationships",
+          "Improves communication, cooperation, and conflict recovery",
+          "Creates a sense of meaning, belonging, and shared responsibility",
+          "Encourages patience, forgiveness, and long-term personal growth"
+        ],
+        visualPrompt: "Professional wellbeing and connection diagram",
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Practicing Love Well",
+        layout: "bullets" as const,
+        bullets: [
+          "Listen fully before responding",
+          "Respect boundaries and communicate expectations clearly",
+          "Choose consistency over dramatic gestures",
+          "Repair mistakes with accountability, not excuses"
+        ],
+        visualPrompt: "Action checklist for healthy relationships",
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Key Takeaways",
+        layout: "bullets" as const,
+        bullets: [
+          "Love is strongest when care and respect are practiced daily",
+          "Healthy love protects both connection and individuality",
+          "The best relationships combine emotion, trust, and responsibility"
+        ],
+        visualPrompt: "Clean closing slide with three takeaways",
+        speakerNotes: sourceNote
+      }
+    ];
+  }
+
   if (/\b(university|college|campus|school|institute)\b/i.test(topic)) {
     return [
       {
@@ -449,9 +515,9 @@ function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] 
       title: "Overview",
       layout: "bullets" as const,
       bullets: [
-        `Explain what ${topic} is and why it matters`,
-        "Define the audience, objective, and expected outcome",
-        "Separate verified facts from assumptions or open questions"
+        `${titleCase(topic)} is the central theme of this presentation`,
+        "The deck gives a clear overview, key ideas, practical meaning, and takeaways",
+        "The focus is useful explanation rather than unsupported claims"
       ],
       visualPrompt: "Simple overview panel",
       speakerNotes: sourceNote
@@ -460,9 +526,9 @@ function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] 
       title: "Key Points",
       layout: "bullets" as const,
       bullets: [
-        "Summarize the most important facts in plain language",
-        "Group details into 3-4 clear themes",
-        "Keep each slide focused on one message"
+        "Start with a simple definition and shared understanding",
+        "Organize the topic into clear themes that are easy to remember",
+        "Use practical examples to make the idea useful for the audience"
       ],
       visualPrompt: "Three-part summary layout",
       speakerNotes: sourceNote
@@ -471,9 +537,9 @@ function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] 
       title: "What To Know",
       layout: "bullets" as const,
       bullets: [
-        "Add relevant facts, examples, constraints, or comparisons",
-        "Call out what is confirmed and what still needs checking",
-        "Use official links or pasted notes for precise details"
+        "What the topic means in everyday situations",
+        "Why it matters to people, teams, decisions, or behavior",
+        "How to apply the idea responsibly and clearly"
       ],
       visualPrompt: "Fact checklist layout",
       speakerNotes: sourceNote
@@ -482,9 +548,9 @@ function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] 
       title: "Recommended Actions",
       layout: "bullets" as const,
       bullets: [
-        "Confirm missing facts",
-        "Add audience-specific examples",
-        "Prepare the final version for sharing"
+        "Make the message specific to the audience",
+        "Use examples that match the setting",
+        "Close with a memorable takeaway"
       ],
       visualPrompt: "Action checklist layout",
       speakerNotes: sourceNote
@@ -493,6 +559,9 @@ function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] 
 }
 
 function fallbackSubtitle(topic: string, request: DeckRequest): string {
+  if (isLoveTopic(topic)) {
+    return "A professional overview of connection, trust, and emotional maturity";
+  }
   if (/\b(university|college|campus|school|institute)\b/i.test(topic)) {
     return "A clean campus overview for students, parents, and visitors";
   }
@@ -500,6 +569,14 @@ function fallbackSubtitle(topic: string, request: DeckRequest): string {
 }
 
 function fallbackClosingBullets(topic: string): string[] {
+  if (isLoveTopic(topic)) {
+    return [
+      "Practice care through consistent action",
+      "Protect respect, trust, and healthy boundaries",
+      "Build relationships with patience and accountability"
+    ];
+  }
+
   if (/\b(university|college|campus|school|institute)\b/i.test(topic)) {
     return [
       "Add official department and admission links",
@@ -508,7 +585,15 @@ function fallbackClosingBullets(topic: string): string[] {
     ];
   }
 
-  return ["Verify the facts", "Add audience-specific examples", "Share the final version"];
+  return ["Clarify the message", "Use relevant examples", "Share a focused final version"];
+}
+
+function isLoveTopic(topic: string): boolean {
+  return topic.trim().toLowerCase() === "love";
+}
+
+function titleCase(value: string): string {
+  return value.replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
 }
 
 function parseUserSources(customContext?: string, assetLinks?: string): ResearchSource[] {
