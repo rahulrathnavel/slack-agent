@@ -113,7 +113,6 @@ export function deckWizardModal(metadata: {
           options: [
             checkboxOption("Use Slack context", "slack_context"),
             checkboxOption("Use web research", "web_research"),
-            checkboxOption("Use licensed images", "licensed_images"),
             checkboxOption("Include source citations", "citations"),
             checkboxOption("Speaker notes", "speaker_notes"),
             checkboxOption("Video links when useful", "video_links")
@@ -122,7 +121,8 @@ export function deckWizardModal(metadata: {
       },
       inputText("assets", "assets", "Custom files, links, or references", true, {
         multiline: true,
-        placeholder: "Paste URLs, Slack message links, image/video links, or describe uploaded files to use."
+        placeholder:
+          "Optional image URLs. Examples: slide 2: image right https://example.com/photo.jpg | slide 3: image full https://example.com/chart.png"
       }),
       inputText("context", "context", "Messy notes or source context", true, {
         multiline: true,
@@ -130,7 +130,8 @@ export function deckWizardModal(metadata: {
       }),
       inputText("advanced_prompt", "advanced_prompt", "Advanced customization prompt", true, {
         multiline: true,
-        placeholder: "Example: make it McKinsey-style, use short punchy headlines, include a risks slide, avoid hype."
+        placeholder:
+          "Examples: transition: fade | slide 2: image right https://example.com/photo.jpg | slide 3: no image | make it concise"
       })
     ]
   };

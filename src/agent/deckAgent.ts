@@ -6,15 +6,16 @@ import { renderDeckSite } from "../deck/render.js";
 import { logger } from "../logger.js";
 import { redactSensitiveText, truncateForPrompt } from "../safety.js";
 import { readJsonFile } from "../storage/files.js";
-import { searchLicensedImages } from "../services/openverse.js";
 import { searchSlackContext } from "../services/slackSearch.js";
 import { searchWeb } from "../services/tavily.js";
 import { NvidiaClient } from "../services/nvidia.js";
 import type {
   DeckAsset,
   DeckPlan,
+  DeckTransition,
   DeckRequest,
   GeneratedDeck,
+  ImagePlacement,
   ResearchSource,
   SlackContextSearchResult,
   SlidePlan
@@ -56,17 +57,24 @@ interface GenerateOptions {
   actionToken?: string;
 }
 
+interface AdvancedControls {
+  assets: DeckAsset[];
+  transition?: DeckTransition;
+}
+
 export class DeckAgent {
   constructor(private readonly nvidia = new NvidiaClient()) {}
 
   async generate(request: DeckRequest, options: GenerateOptions = {}): Promise<GeneratedDeck> {
     const safeRequest = sanitizeRequest(request);
     const topic = safeRequest.title || safeRequest.topic;
+    const controls = parseAdvancedControls(safeRequest);
+    const requestWithControls = {
+      ...safeRequest,
+      transition: controls.transition ?? safeRequest.transition
+    };
 
     const webPromise: Promise<ResearchSource[]> = safeRequest.useWebResearch ? searchWeb(topic, 7) : Promise.resolve([]);
-    const assetPromise: Promise<DeckAsset[]> = safeRequest.useLicensedImages
-      ? searchLicensedImages(topic, Math.min(8, safeRequest.slideCount))
-      : Promise.resolve([]);
     const slackPromise: Promise<SlackContextSearchResult> = safeRequest.useSlackContext
       ? searchSlackContext({
           query: topic,
@@ -74,10 +82,11 @@ export class DeckAgent {
           userToken: options.userToken,
           actionToken: options.actionToken,
           contextChannelId: safeRequest.channelId
-        })
+      })
       : Promise.resolve({ sources: [], text: "" });
 
-    const [webSources, assets, slackContext] = await Promise.all([webPromise, assetPromise, slackPromise]);
+    const [webSources, slackContext] = await Promise.all([webPromise, slackPromise]);
+    const assets = controls.assets;
 
     if (slackContext.unavailableReason) {
       logger.info({ reason: slackContext.unavailableReason }, "Slack RTS context unavailable");
@@ -89,7 +98,7 @@ export class DeckAgent {
       ...parseUserSources(safeRequest.customContext, safeRequest.assetLinks)
     ]);
 
-    const plan = await this.createPlan(safeRequest, sources, assets, slackContext.text);
+    const plan = await this.createPlan(requestWithControls, sources, assets, slackContext.text);
     const deckId = `${Date.now()}-${nanoid(8)}`;
     const localDir = path.join(config.decksDir, deckId);
     const publicUrl = `${config.PUBLIC_BASE_URL.replace(/\/$/, "")}/decks/${deckId}/`;
@@ -99,7 +108,7 @@ export class DeckAgent {
       outputDir: localDir,
       publicUrl,
       plan,
-      request: safeRequest,
+      request: requestWithControls,
       assets,
       sources
     });
@@ -215,9 +224,12 @@ Rules:
 - Never write instructions to the presenter as slide bullets.
 - Never use placeholders such as "explain", "define", "add examples", "insert", "verify facts", or "[Name]" as visible slide content.
 - For broad abstract topics, create a polished educational/business overview with useful principles, examples, and takeaways.
+- Generate content-only slides by default.
+- Do not reserve image space, ask for images, or describe image prompts in visible slide content.
+- Use images only when user-provided image URLs are listed below.
 - Use citations only from the source URLs provided below.
 - If sources are thin, say so in speaker notes and avoid invented facts.
-- If licensed assets are available, include imageQuery values that match them.
+- If user-provided image assets are available, include imageQuery values that match the intended slide.
 - Include speakerNotes ${request.includeSpeakerNotes ? "for every slide" : "only when useful"}.
 
 Request:
@@ -241,8 +253,8 @@ ${truncateForPrompt(slackContextText, 8_000)}
 Research sources:
 ${truncateForPrompt(sourcePack || "No research sources available.", 10_000)}
 
-Licensed assets:
-${truncateForPrompt(assetPack || "No licensed assets available.", 4_000)}`
+User image assets:
+${truncateForPrompt(assetPack || "No user image assets available.", 4_000)}`
       }
     ];
 
@@ -324,8 +336,100 @@ function sanitizeRequest(request: DeckRequest): DeckRequest {
     slideCount: Math.max(3, Math.min(12, Math.round(request.slideCount))),
     customContext: request.customContext ? redactSensitiveText(request.customContext) : undefined,
     assetLinks: request.assetLinks ? redactSensitiveText(request.assetLinks) : undefined,
-    advancedPrompt: request.advancedPrompt ? redactSensitiveText(request.advancedPrompt) : undefined
+    advancedPrompt: request.advancedPrompt ? redactSensitiveText(request.advancedPrompt) : undefined,
+    transition: request.transition
   };
+}
+
+function parseAdvancedControls(request: DeckRequest): AdvancedControls {
+  const text = `${request.assetLinks ?? ""}\n${request.advancedPrompt ?? ""}\n${request.customContext ?? ""}`;
+  const assets: DeckAsset[] = [];
+  const disabledSlides = parseDisabledImageSlides(text);
+  const usedUrls = new Set<string>();
+
+  for (const match of text.matchAll(/slide\s*(\d+)\s*:\s*image(?:\s+(left|right|background|full))?\s+(https?:\/\/\S+)/gi)) {
+    const slideIndex = Number(match[1]) - 1;
+    const placement = normalizeImagePlacement(match[2]);
+    const url = cleanUrl(match[3]);
+    if (slideIndex >= 0 && url && !disabledSlides.has(slideIndex) && !usedUrls.has(url)) {
+      assets.push(userImageAsset(url, slideIndex, placement));
+      usedUrls.add(url);
+    }
+  }
+
+  for (const match of text.matchAll(/image\s+slide\s*(\d+)\s*:\s*(?:\s*(left|right|background|full)\s+)?(https?:\/\/\S+)/gi)) {
+    const slideIndex = Number(match[1]) - 1;
+    const placement = normalizeImagePlacement(match[2]);
+    const url = cleanUrl(match[3]);
+    if (slideIndex >= 0 && url && !disabledSlides.has(slideIndex) && !usedUrls.has(url)) {
+      assets.push(userImageAsset(url, slideIndex, placement));
+      usedUrls.add(url);
+    }
+  }
+
+  let nextSlideIndex = 1;
+  for (const urlMatch of text.matchAll(/https?:\/\/\S+/gi)) {
+    const url = cleanUrl(urlMatch[0]);
+    if (!url || usedUrls.has(url) || !looksLikeImageUrl(url)) {
+      continue;
+    }
+    while (disabledSlides.has(nextSlideIndex)) {
+      nextSlideIndex += 1;
+    }
+    if (nextSlideIndex < request.slideCount) {
+      assets.push(userImageAsset(url, nextSlideIndex, "right"));
+      usedUrls.add(url);
+      nextSlideIndex += 1;
+    }
+  }
+
+  return {
+    assets,
+    transition: parseTransition(text)
+  };
+}
+
+function parseDisabledImageSlides(text: string): Set<number> {
+  const disabled = new Set<number>();
+  for (const match of text.matchAll(/slide\s*(\d+)\s*:\s*(?:no\s+image|text\s+only|content\s+only)/gi)) {
+    const slideIndex = Number(match[1]) - 1;
+    if (slideIndex >= 0) {
+      disabled.add(slideIndex);
+    }
+  }
+  return disabled;
+}
+
+function parseTransition(text: string): DeckTransition | undefined {
+  const match = text.match(/\btransition\s*:\s*(fade|slide|zoom|none)\b/i);
+  return match?.[1] ? (match[1].toLowerCase() as DeckTransition) : undefined;
+}
+
+function normalizeImagePlacement(value?: string): ImagePlacement {
+  if (value === "left" || value === "background" || value === "full") {
+    return value;
+  }
+  return "right";
+}
+
+function userImageAsset(url: string, slideIndex: number, placement: ImagePlacement): DeckAsset {
+  return {
+    title: `User image for slide ${slideIndex + 1}`,
+    url,
+    thumbnailUrl: url,
+    source: "user",
+    slideIndex,
+    placement
+  };
+}
+
+function cleanUrl(value?: string): string | undefined {
+  const cleaned = value?.trim().replace(/[)>.,;]+$/g, "");
+  return cleaned || undefined;
+}
+
+function looksLikeImageUrl(url: string): boolean {
+  return /\.(png|jpe?g|webp|gif|avif)(?:\?|#|$)/i.test(url);
 }
 
 function normalizePlan(plan: DeckPlan, request: DeckRequest, sources: ResearchSource[]): DeckPlan {
