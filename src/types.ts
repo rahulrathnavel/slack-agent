@@ -22,7 +22,9 @@ export type BrandStyle =
   | "dark-stage"
   | "minimal";
 
-export type DeckTransition = "slide" | "fade" | "zoom" | "none";
+export type SlideTransition = "slide" | "fade" | "zoom" | "none";
+
+export type DeckTransition = SlideTransition | "varied";
 
 export type ImagePlacement = "right" | "left" | "background" | "full";
 
@@ -44,6 +46,7 @@ export interface DeckRequest {
   assetLinks?: string;
   advancedPrompt?: string;
   transition?: DeckTransition;
+  slideTransitions?: Record<number, SlideTransition>;
   requesterUserId?: string;
   channelId?: string;
   threadTs?: string;

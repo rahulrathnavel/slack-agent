@@ -51,6 +51,10 @@ describe("renderDeckSite", () => {
     const manifest = await fs.readFile(path.join(dir, "deck.json"), "utf8");
     expect(html).toContain("Customer onboarding");
     expect(html).toContain("Deck controls");
+    expect(html).toContain("transition-fade");
+    expect(html).toContain("transition-slide");
+    expect(html).toContain("transition-zoom");
+    expect(html).not.toContain("<figure class=\"visual\"");
     expect(JSON.parse(manifest).deckId).toBe("test");
   });
 
@@ -70,7 +74,8 @@ describe("renderDeckSite", () => {
       includeCitations: true,
       includeSpeakerNotes: true,
       includeVideoLinks: false,
-      transition: "fade"
+      transition: "fade",
+      slideTransitions: { 1: "zoom" }
     };
     const plan: DeckPlan = {
       title: "Anger",
@@ -107,6 +112,7 @@ describe("renderDeckSite", () => {
 
     const html = await fs.readFile(path.join(dir, "index.html"), "utf8");
     expect(html).toContain("transition-fade");
+    expect(html).toContain("transition-zoom");
     expect(html).toContain("visual-left");
     expect(html).toContain("https://example.com/anger.png");
     expect(html).not.toContain("placeholder");

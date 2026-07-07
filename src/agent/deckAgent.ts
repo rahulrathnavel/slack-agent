@@ -18,6 +18,7 @@ import type {
   ImagePlacement,
   ResearchSource,
   SlackContextSearchResult,
+  SlideTransition,
   SlidePlan
 } from "../types.js";
 
@@ -60,6 +61,7 @@ interface GenerateOptions {
 interface AdvancedControls {
   assets: DeckAsset[];
   transition?: DeckTransition;
+  slideTransitions: Record<number, SlideTransition>;
 }
 
 export class DeckAgent {
@@ -71,7 +73,8 @@ export class DeckAgent {
     const controls = parseAdvancedControls(safeRequest);
     const requestWithControls = {
       ...safeRequest,
-      transition: controls.transition ?? safeRequest.transition
+      transition: controls.transition ?? safeRequest.transition ?? "varied",
+      slideTransitions: controls.slideTransitions
     };
 
     const webPromise: Promise<ResearchSource[]> = safeRequest.useWebResearch ? searchWeb(topic, 7) : Promise.resolve([]);
@@ -337,7 +340,8 @@ function sanitizeRequest(request: DeckRequest): DeckRequest {
     customContext: request.customContext ? redactSensitiveText(request.customContext) : undefined,
     assetLinks: request.assetLinks ? redactSensitiveText(request.assetLinks) : undefined,
     advancedPrompt: request.advancedPrompt ? redactSensitiveText(request.advancedPrompt) : undefined,
-    transition: request.transition
+    transition: request.transition,
+    slideTransitions: request.slideTransitions
   };
 }
 
@@ -385,7 +389,8 @@ function parseAdvancedControls(request: DeckRequest): AdvancedControls {
 
   return {
     assets,
-    transition: parseTransition(text)
+    transition: parseTransition(text),
+    slideTransitions: parseSlideTransitions(text)
   };
 }
 
@@ -401,8 +406,20 @@ function parseDisabledImageSlides(text: string): Set<number> {
 }
 
 function parseTransition(text: string): DeckTransition | undefined {
-  const match = text.match(/\btransition\s*:\s*(fade|slide|zoom|none)\b/i);
+  const match = text.match(/(?:^|[|\n])\s*transition\s*:\s*(varied|fade|slide|zoom|none)\b/i);
   return match?.[1] ? (match[1].toLowerCase() as DeckTransition) : undefined;
+}
+
+function parseSlideTransitions(text: string): Record<number, SlideTransition> {
+  const transitions: Record<number, SlideTransition> = {};
+  const pattern = /slide\s*(\d+)\s*(?::\s*transition|transition\s*:)\s*(fade|slide|zoom|none)\b/gi;
+  for (const match of text.matchAll(pattern)) {
+    const slideIndex = Number(match[1]) - 1;
+    if (slideIndex >= 0 && match[2]) {
+      transitions[slideIndex] = match[2].toLowerCase() as SlideTransition;
+    }
+  }
+  return transitions;
 }
 
 function normalizeImagePlacement(value?: string): ImagePlacement {

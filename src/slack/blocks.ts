@@ -131,7 +131,7 @@ export function deckWizardModal(metadata: {
       inputText("advanced_prompt", "advanced_prompt", "Advanced customization prompt", true, {
         multiline: true,
         placeholder:
-          "Examples: transition: fade | slide 2: image right https://example.com/photo.jpg | slide 3: no image | make it concise"
+          "Examples: transition: fade | slide 2: transition zoom | slide 2: image right https://example.com/photo.jpg | slide 3: no image"
       })
     ]
   };
@@ -195,7 +195,7 @@ export function finishedBlocks(params: {
       elements: [
         {
           type: "mrkdwn",
-          text: `${params.sourceCount} sources | ${params.assetCount} licensed assets | keyboard controls and print/PDF mode included`
+          text: `${params.sourceCount} sources | ${params.assetCount} user images | keyboard controls and print/PDF mode included`
         }
       ]
     }
@@ -284,7 +284,9 @@ export function parseDeckRequestFromView(view: {
 }
 
 export function quickDraftRequest(topic: string, userId: string, channelId?: string, threadTs?: string): DeckRequest {
-  const cleanTopic = normalizeQuickTopic(topic) || "A practical presentation";
+  const [topicInput = "", ...controlParts] = topic.split(/\s*\|\s*/);
+  const cleanTopic = normalizeQuickTopic(topicInput) || "A practical presentation";
+  const advancedPrompt = controlParts.map((part) => part.trim()).filter(Boolean).join(" | ");
   const isEducationOverview = /\b(university|college|campus|school|institute|overview)\b/i.test(cleanTopic);
   const isExecutive = /\b(executive|leadership|board|investor|readiness|launch|strategy)\b/i.test(cleanTopic);
 
@@ -302,6 +304,7 @@ export function quickDraftRequest(topic: string, userId: string, channelId?: str
     includeCitations: true,
     includeSpeakerNotes: true,
     includeVideoLinks: false,
+    advancedPrompt: advancedPrompt || undefined,
     requesterUserId: userId,
     channelId,
     threadTs

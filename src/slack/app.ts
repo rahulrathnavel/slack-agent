@@ -45,7 +45,7 @@ export function createSlackApp(agent = new DeckAgent()): { app: App; receiver: E
         }
       : undefined,
     installationStore,
-    processBeforeResponse: true
+    processBeforeResponse: false
   });
 
   const app = new App({
@@ -137,7 +137,7 @@ function registerSlackHandlers(app: App, agent: DeckAgent): void {
       return;
     }
 
-    await ack();
+    await ack({ response_action: "clear" });
     const request = parseDeckRequestFromView(view, body.user.id);
     await generateAndPost({ request, client, agent, botToken: context.botToken });
   });

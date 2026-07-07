@@ -2,7 +2,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import sanitizeFilename from "sanitize-filename";
 import { writeJsonFile } from "../storage/files.js";
-import type { DeckAsset, DeckPlan, DeckRequest, ImagePlacement, ResearchSource, SlidePlan } from "../types.js";
+import type {
+  DeckAsset,
+  DeckPlan,
+  DeckRequest,
+  ImagePlacement,
+  ResearchSource,
+  SlidePlan,
+  SlideTransition
+} from "../types.js";
 
 interface RenderDeckArgs {
   deckId: string;
@@ -68,9 +76,10 @@ export async function renderDeckSite(args: RenderDeckArgs): Promise<void> {
 
 function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs): string {
   const theme = THEME_COLORS[request.brandStyle] ?? THEME_COLORS["executive-clean"]!;
-  const slides = plan.slides.map((slide, index) => renderSlide(slide, index, plan.slides.length, assets, request));
+  const slides = plan.slides.map((slide, index) =>
+    renderSlide(slide, index, plan.slides.length, assets, request, transitionForSlide(request, index))
+  );
   const safeTitle = escapeHtml(plan.title);
-  const transition = request.transition ?? "slide";
   const sourceItems = sources
     .slice(0, 18)
     .map((source) => {
@@ -104,11 +113,11 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     .slides { min-height: 0; height: 100%; position: relative; overflow: hidden; }
     .slide { position: absolute; inset: 0; min-height: 0; padding: clamp(24px, 4.4vh, 54px) clamp(24px, 5.6vw, 82px); display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(22px, 3.6vw, 58px); align-items: stretch; opacity: 0; overflow: hidden; pointer-events: none; }
     .slide.active { opacity: 1; transform: translateX(0); pointer-events: auto; }
-    .transition-slide .slide { transform: translateX(2vw); transition: opacity 240ms ease, transform 240ms ease; }
-    .transition-fade .slide { transform: none; transition: opacity 260ms ease; }
-    .transition-zoom .slide { transform: scale(.985); transition: opacity 260ms ease, transform 260ms ease; }
-    .transition-none .slide { transform: none; transition: none; }
-    .transition-slide .slide.active, .transition-fade .slide.active, .transition-zoom .slide.active, .transition-none .slide.active { transform: translateX(0) scale(1); opacity: 1; }
+    .slide.transition-slide { transform: translateX(2vw); transition: opacity 240ms ease, transform 240ms ease; }
+    .slide.transition-fade { transform: none; transition: opacity 260ms ease; }
+    .slide.transition-zoom { transform: scale(.985); transition: opacity 260ms ease, transform 260ms ease; }
+    .slide.transition-none { transform: none; transition: none; }
+    .slide.transition-slide.active, .slide.transition-fade.active, .slide.transition-zoom.active, .slide.transition-none.active { transform: translateX(0) scale(1); opacity: 1; }
     .slide-title { grid-template-columns: minmax(0, 1fr); align-content: center; }
     .has-visual { grid-template-columns: minmax(0, 1fr) minmax(280px, .78fr); }
     .visual-left .content { order: 2; }
@@ -176,7 +185,7 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
   </style>
 </head>
 <body>
-  <main class="deck-shell transition-${escapeAttribute(transition)}" data-deck-id="${escapeAttribute(deckId)}">
+  <main class="deck-shell" data-deck-id="${escapeAttribute(deckId)}">
     <div class="meta">PioltPPT live deck</div>
     <section class="slides" aria-live="polite">
       ${slides.join("\n")}
@@ -232,7 +241,8 @@ function renderSlide(
   index: number,
   total: number,
   assets: DeckAsset[],
-  request: DeckRequest
+  request: DeckRequest,
+  transition: SlideTransition
 ): string {
   const asset = chooseAsset(slide, assets, index);
   const titleTag = index === 0 ? "h1" : "h2";
@@ -253,7 +263,7 @@ function renderSlide(
   const notes = escapeAttribute(slide.speakerNotes ?? "");
 
   if (slide.layout === "quote") {
-    return `<article class="slide ${layoutClass} ${headingClass} ${visualClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
+    return `<article class="slide transition-${transition} ${layoutClass} ${headingClass} ${visualClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
       <div class="content">
         <div class="kicker">${index + 1} / ${total}</div>
         <blockquote class="quote">${escapeHtml(slide.bullets[0] || slide.title)}</blockquote>
@@ -262,7 +272,7 @@ function renderSlide(
     </article>`;
   }
 
-  return `<article class="slide ${layoutClass} ${headingClass} ${visualClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
+  return `<article class="slide transition-${transition} ${layoutClass} ${headingClass} ${visualClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
     <div class="content">
       <div class="kicker">${index + 1} / ${total}</div>
       <${titleTag}>${escapeHtml(slide.title)}</${titleTag}>
@@ -272,6 +282,18 @@ function renderSlide(
     </div>
     ${visualMarkup}
   </article>`;
+}
+
+function transitionForSlide(request: DeckRequest, index: number): SlideTransition {
+  const perSlide = request.slideTransitions?.[index];
+  if (perSlide) {
+    return perSlide;
+  }
+  if (request.transition && request.transition !== "varied") {
+    return request.transition;
+  }
+  const varied: SlideTransition[] = ["fade", "slide", "zoom", "slide"];
+  return varied[index % varied.length]!;
 }
 
 function visualPlacementClass(placement: ImagePlacement = "right"): string {
