@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+﻿import fs from "node:fs/promises";
 import path from "node:path";
 import express from "express";
 import type { Server } from "node:http";
@@ -13,6 +13,12 @@ const deckId = `${Date.now()}-editorTest`;
 const deckDir = path.join(config.decksDir, deckId);
 const draftPath = path.join(config.editorDraftsDir, `${deckId}.html`);
 const baseHtml = "<!doctype html><html><body><h1>Original title</h1><p>Original copy</p></body></html>";
+const slideHtml = `<!doctype html><html><body>
+<article class="slide transition-slide has-visual visual-left">
+  <div class="content"><h2>Slide one</h2><ul class="bullets"><li>First point</li><li>Second point</li></ul></div>
+  <figure class="visual"><img src="/sample.jpg" alt="Sample" /></figure>
+</article>
+</body></html>`;
 let server: Server;
 let baseUrl: string;
 
@@ -106,5 +112,31 @@ describe("deck editor routes", () => {
     expect(await published.json()).toMatchObject({ ok: true, title: "Original title", notified: false });
     expect(await fs.readFile(path.join(deckDir, "index.html"), "utf8")).toContain("AI updated copy");
     expect((await fs.readdir(path.join(config.editorRevisionsDir, deckId))).length).toBe(1);
+  });
+
+  it("handles common editor prompts without waiting for the model", async () => {
+    const headers = {
+      Authorization: `Bearer ${editorTokenFor(deckId)}`,
+      "Content-Type": "application/json"
+    };
+    const moved = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ html: slideHtml, instruction: "make the image arranged in right side of the slide" })
+    });
+    const movedBody = (await moved.json()) as { html: string; summary: string };
+    expect(movedBody.summary).toContain("Moved slide 1 image to the right");
+    expect(movedBody.html).toContain("visual-right");
+    expect(movedBody.html).not.toContain("visual-left");
+
+    const reduced = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ html: movedBody.html, instruction: "make the slide 1 to one single point alone" })
+    });
+    const reducedBody = (await reduced.json()) as { html: string; summary: string };
+    expect(reducedBody.summary).toContain("Kept one main point");
+    expect(reducedBody.html).toContain("<li>First point</li>");
+    expect(reducedBody.html).not.toContain("<li>Second point</li>");
   });
 });

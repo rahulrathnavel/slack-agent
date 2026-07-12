@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+﻿import fs from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import type { Application, Request, Response } from "express";
@@ -81,7 +81,7 @@ export function mountEditorRoutes(app: Application, slackClient: WebClient, nvid
       const html = validatedHtml(req.body?.html);
       const instruction = String(req.body?.instruction ?? "").trim().slice(0, 4_000);
       if (!instruction) throw new EditorInputError("Add an editing instruction.");
-      const result = await editDeckHtml(nvidia, html, instruction);
+      const result = (await applyFastHtmlEdit(html, instruction)) ?? (await editDeckHtml(nvidia, html, instruction));
       res.json(result);
     } catch (error) {
       sendEditorError(res, error);
@@ -174,6 +174,93 @@ Do not wrap the result in Markdown fences.`
   return { html: updated, summary: "The requested change is ready in the preview." };
 }
 
+async function applyFastHtmlEdit(html: string, instruction: string): Promise<{ html: string; summary: string } | undefined> {
+  const index = inferSlideIndex(html, instruction);
+  if (index === undefined) return undefined;
+
+  let nextHtml = html;
+  const summaries: string[] = [];
+  const lower = instruction.toLowerCase();
+
+  if (/\bimage\b/.test(lower) && /\bright\b/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, moveSlideImage("right"));
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Moved slide ${index + 1} image to the right.`);
+  } else if (/\bimage\b/.test(lower) && /\bleft\b/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, moveSlideImage("left"));
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Moved slide ${index + 1} image to the left.`);
+  } else if (/\bimage\b/.test(lower) && /\bbackground\b/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, moveSlideImage("background"));
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Changed slide ${index + 1} image to background placement.`);
+  } else if (/\bimage\b/.test(lower) && /\bfull\b/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, moveSlideImage("full"));
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Changed slide ${index + 1} image to full-width placement.`);
+  }
+
+  if (/(single|one)\s+(point|bullet)|one\s+single\s+point|single\s+point\s+alone/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, keepFirstBulletOnly);
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Kept one main point on slide ${index + 1}.`);
+  }
+
+  if (!summaries.length || nextHtml === html) return undefined;
+  return { html: validatedHtml(nextHtml), summary: summaries.join(" ") };
+}
+
+function inferSlideIndex(html: string, instruction: string): number | undefined {
+  const slideNumber = instruction.match(/\bslide\s*(\d+)\b/i)?.[1];
+  if (slideNumber) {
+    const index = Number(slideNumber) - 1;
+    return Number.isInteger(index) && index >= 0 ? index : undefined;
+  }
+  if (!/\bimage\b/i.test(instruction)) return undefined;
+  const matches = [...html.matchAll(/<article\b[^>]*class="[^"]*\bslide\b[^"]*"[^>]*>[\s\S]*?<\/article>/gi)];
+  const firstVisualIndex = matches.findIndex((match) => /<figure\b[^>]*class="[^"]*\bvisual\b/i.test(match[0]));
+  return firstVisualIndex >= 0 ? firstVisualIndex : undefined;
+}
+
+function updateSlide(html: string, index: number, edit: (slideHtml: string) => string | undefined): string | undefined {
+  const matches = [...html.matchAll(/<article\b[^>]*class="[^"]*\bslide\b[^"]*"[^>]*>[\s\S]*?<\/article>/gi)];
+  const match = matches[index];
+  if (!match || match.index === undefined) return undefined;
+  const replacement = edit(match[0]);
+  if (!replacement || replacement === match[0]) return undefined;
+  return `${html.slice(0, match.index)}${replacement}${html.slice(match.index + match[0].length)}`;
+}
+
+function moveSlideImage(placement: "right" | "left" | "background" | "full"): (slideHtml: string) => string | undefined {
+  return (slideHtml) => {
+    if (!/<figure\b[^>]*class="[^"]*\bvisual\b/i.test(slideHtml)) return undefined;
+    const visualClass = placement === "right" ? "visual-right" : `visual-${placement}`;
+    return slideHtml.replace(/<article\b([^>]*)class="([^"]*)"([^>]*)>/i, (_full, before, classValue: string, after) => {
+      const classes = classValue
+        .split(/\s+/)
+        .filter((name) => name && !["visual-left", "visual-right", "visual-background", "visual-full"].includes(name));
+      if (!classes.includes("has-visual")) classes.push("has-visual");
+      classes.push(visualClass);
+      return `<article${before}class="${classes.join(" ")}"${after}>`;
+    });
+  };
+}
+
+function keepFirstBulletOnly(slideHtml: string): string | undefined {
+  const list = slideHtml.match(/<ul\b[^>]*class="[^"]*\bbullets\b[^"]*"[^>]*>([\s\S]*?)<\/ul>/i);
+  const listMarkup = list?.[0];
+  const listInner = list?.[1];
+  if (!listMarkup || !listInner) return undefined;
+  const firstBullet = listInner.match(/<li\b[^>]*>[\s\S]*?<\/li>/i)?.[0];
+  if (!firstBullet) return undefined;
+  const nextList = listMarkup.replace(listInner, firstBullet);
+  return slideHtml.replace(listMarkup, nextList);
+}
 async function notifySlack(client: WebClient, manifest: DeckManifest, title: string): Promise<boolean> {
   try {
     let channel = manifest.request.channelId;
