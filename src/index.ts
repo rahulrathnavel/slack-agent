@@ -3,13 +3,21 @@ import express from "express";
 import { pinoHttp } from "pino-http";
 import { DeckAgent } from "./agent/deckAgent.js";
 import { config } from "./config.js";
+import { mountEditorRoutes } from "./editor/routes.js";
 import { logger } from "./logger.js";
 import { mountMcpRoutes } from "./mcp/server.js";
 import { createSlackApp, slackManifest, writeManifestFile } from "./slack/app.js";
 import { ensureDirectories } from "./storage/files.js";
 
 async function main(): Promise<void> {
-  await ensureDirectories([config.dataDir, config.installationDir, config.publicDir, config.decksDir]);
+  await ensureDirectories([
+    config.dataDir,
+    config.installationDir,
+    config.editorDraftsDir,
+    config.editorRevisionsDir,
+    config.publicDir,
+    config.decksDir
+  ]);
 
   const agent = new DeckAgent();
   const { app: slackApp, receiver } = createSlackApp(agent);
@@ -34,6 +42,20 @@ async function main(): Promise<void> {
   receiver.app.get("/slack/manifest", (_req, res) => {
     res.json(slackManifest());
   });
+
+  mountEditorRoutes(receiver.app, slackApp.client);
+
+  receiver.app.get("/decks/:deckId/deck.json", (_req, res) => {
+    res.status(404).send("Not found");
+  });
+
+  receiver.app.use(
+    "/assets",
+    express.static(path.join(config.publicDir, "assets"), {
+      immutable: false,
+      maxAge: "5m"
+    })
+  );
 
   receiver.app.use(
     "/decks",

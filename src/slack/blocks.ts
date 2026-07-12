@@ -162,6 +162,7 @@ export function finishedBlocks(params: {
   deckId: string;
   title: string;
   publicUrl: string;
+  editorUrl: string;
   sourceCount: number;
   assetCount: number;
 }): KnownBlock[] {
@@ -181,6 +182,13 @@ export function finishedBlocks(params: {
           text: { type: "plain_text", text: "Open deck" },
           url: params.publicUrl,
           action_id: "open_generated_deck"
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Open editor" },
+          url: params.editorUrl,
+          action_id: "open_deck_editor",
+          style: "primary"
         },
         {
           type: "button",

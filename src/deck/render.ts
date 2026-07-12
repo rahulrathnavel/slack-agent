@@ -150,7 +150,8 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     .visual::after { content: ""; position: absolute; inset: auto 0 0 0; height: 8px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
     .quote { font-size: clamp(28px, 3.6vw, 56px); line-height: 1.1; border-left: 8px solid var(--accent); padding-left: 28px; overflow-wrap: break-word; }
     .meta { position: fixed; top: 18px; right: 22px; font-size: 13px; color: var(--muted); z-index: 3; }
-    .controls { border-top: 1px solid var(--line); display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: center; padding: 12px 18px; background: color-mix(in srgb, var(--bg) 94%, var(--surface)); }
+    .controls { min-width: 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(48px, 1fr) auto; gap: 14px; align-items: center; padding: 12px 18px; background: color-mix(in srgb, var(--bg) 94%, var(--surface)); }
+    .controls > div:first-child { display: flex; gap: 4px; }
     button { appearance: none; border: 1px solid var(--line); background: var(--surface); color: var(--ink); min-width: 42px; height: 42px; font: inherit; font-weight: 800; cursor: pointer; }
     button:hover { border-color: var(--accent); color: var(--accent); }
     .progress { height: 8px; background: color-mix(in srgb, var(--ink) 12%, transparent); position: relative; overflow: hidden; }
@@ -166,14 +167,18 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     a { color: var(--accent); }
     @media (max-width: 820px) {
       body { overflow: hidden; }
-      .slide, .has-visual { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, .82fr); gap: 18px; padding: 60px 22px 22px; align-content: center; }
+      .slide, .has-visual { min-width: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, .82fr); gap: 18px; padding: 60px 22px 22px; align-content: center; }
       .slide-title { grid-template-rows: 1fr; }
       .visual-left .content, .visual-left .visual { order: initial; }
       .visual { height: min(30vh, 260px); }
-      h1 { font-size: clamp(34px, 11vw, 60px); }
-      h2 { font-size: clamp(28px, 9vw, 48px); }
+      .content { width: 100%; min-width: 0; }
+      h1 { font-size: clamp(30px, 9vw, 48px); overflow-wrap: anywhere; }
+      h2 { font-size: clamp(26px, 7.5vw, 42px); overflow-wrap: anywhere; }
       .bullets li { font-size: clamp(17px, 5vw, 24px); }
       .meta { top: 12px; right: 14px; }
+      .controls { gap: 8px; padding: 8px; }
+      button { min-width: 38px; height: 38px; }
+      .counter { min-width: 48px; }
     }
     @media print {
       body { overflow: visible; }

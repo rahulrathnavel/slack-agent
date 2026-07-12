@@ -99,6 +99,7 @@ export interface GeneratedDeck {
   deckId: string;
   title: string;
   publicUrl: string;
+  editorUrl: string;
   localDir: string;
   plan: DeckPlan;
   sources: ResearchSource[];

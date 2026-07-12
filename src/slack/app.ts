@@ -260,6 +260,7 @@ async function generateAndPost(params: {
         title: deck.title,
         deckId: deck.deckId,
         publicUrl: deck.publicUrl,
+        editorUrl: deck.editorUrl,
         sourceCount: deck.sources.length,
         assetCount: deck.assets.length
       }),
@@ -306,6 +307,7 @@ async function reviseAndPost(params: {
         title: deck.title,
         deckId: deck.deckId,
         publicUrl: deck.publicUrl,
+        editorUrl: deck.editorUrl,
         sourceCount: deck.sources.length,
         assetCount: deck.assets.length
       }),

@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { config } from "../config.js";
 import { renderDeckSite } from "../deck/render.js";
+import { editorUrlFor } from "../editor/security.js";
 import { logger } from "../logger.js";
 import { redactSensitiveText, truncateForPrompt } from "../safety.js";
 import { readJsonFile } from "../storage/files.js";
@@ -120,6 +121,7 @@ export class DeckAgent {
       deckId,
       title: plan.title,
       publicUrl,
+      editorUrl: editorUrlFor(deckId),
       localDir,
       plan,
       sources,
@@ -156,6 +158,7 @@ export class DeckAgent {
       deckId,
       title: revisedPlan.title,
       publicUrl: manifest.publicUrl,
+      editorUrl: editorUrlFor(deckId),
       localDir: path.join(config.decksDir, deckId),
       plan: revisedPlan,
       sources: manifest.sources,
@@ -268,9 +271,19 @@ ${truncateForPrompt(assetPack || "No user image assets available.", 4_000)}`
         maxTokens: 12_000
       });
       return normalizePlan(plan, request, sources);
-    } catch (error) {
-      logger.warn({ error }, "Model deck plan failed; using fallback plan");
-      return createFallbackPlan(request, sources);
+    } catch (reasoningError) {
+      logger.warn({ error: reasoningError }, "Reasoning model deck plan failed; retrying with primary model");
+      try {
+        const plan = await this.nvidia.chatJson(messages, DeckPlanSchema, {
+          model: config.NVIDIA_MODEL_PRIMARY,
+          temperature: 0.15,
+          maxTokens: 12_000
+        });
+        return normalizePlan(plan, request, sources);
+      } catch (primaryError) {
+        logger.warn({ error: primaryError }, "Both deck plan models failed; using source-grounded fallback plan");
+        return createFallbackPlan(request, sources);
+      }
     }
   }
 
@@ -345,7 +358,7 @@ function sanitizeRequest(request: DeckRequest): DeckRequest {
   };
 }
 
-function parseAdvancedControls(request: DeckRequest): AdvancedControls {
+export function parseAdvancedControls(request: DeckRequest): AdvancedControls {
   const text = `${request.assetLinks ?? ""}\n${request.advancedPrompt ?? ""}\n${request.customContext ?? ""}`;
   const assets: DeckAsset[] = [];
   const disabledSlides = parseDisabledImageSlides(text);
@@ -384,6 +397,14 @@ function parseAdvancedControls(request: DeckRequest): AdvancedControls {
       assets.push(userImageAsset(url, nextSlideIndex, "right"));
       usedUrls.add(url);
       nextSlideIndex += 1;
+    }
+  }
+
+  for (const match of text.matchAll(/slide\s*(\d+)\s*:\s*image(?:\s+(left|right|background|full))?(?!\s+https?:\/\/)(?=\s*(?:[|\n]|$))/gi)) {
+    const slideIndex = Number(match[1]) - 1;
+    const placement = normalizeImagePlacement(match[2]);
+    if (slideIndex >= 0 && !disabledSlides.has(slideIndex) && !assets.some((asset) => asset.slideIndex === slideIndex)) {
+      assets.push(sampleImageAsset(slideIndex, placement));
     }
   }
 
@@ -440,6 +461,19 @@ function userImageAsset(url: string, slideIndex: number, placement: ImagePlaceme
   };
 }
 
+function sampleImageAsset(slideIndex: number, placement: ImagePlacement): DeckAsset {
+  return {
+    title: `Editable sample image for slide ${slideIndex + 1}`,
+    url: "/assets/pioltppt-open-image.svg",
+    thumbnailUrl: "/assets/pioltppt-open-image.svg",
+    creator: "PioltPPT",
+    license: "MIT",
+    source: "editable sample",
+    slideIndex,
+    placement
+  };
+}
+
 function cleanUrl(value?: string): string | undefined {
   const cleaned = value?.trim().replace(/[)>.,;]+$/g, "");
   return cleaned || undefined;
@@ -469,13 +503,18 @@ function normalizePlan(plan: DeckPlan, request: DeckRequest, sources: ResearchSo
   };
 }
 
-function createFallbackPlan(request: DeckRequest, sources: ResearchSource[]): DeckPlan {
+export function createFallbackPlan(request: DeckRequest, sources: ResearchSource[]): DeckPlan {
   const title = request.title || request.topic;
   const topic = request.topic;
   const sourceNote = sources.length
-    ? "Use the source list to replace placeholders with verified details."
+    ? "Built from the available source material; confirm time-sensitive details before presenting."
     : "No verified sources were available, so this slide avoids invented facts.";
-  const middleSlides = fallbackSlidesForTopic(topic, sourceNote).slice(0, Math.max(1, request.slideCount - 2));
+  const middleCount = Math.max(1, request.slideCount - 2);
+  const middleSlides = fallbackSlidesForTopic(topic, sourceNote, sources).slice(0, middleCount);
+  const supplemental = genericFallbackSlides(topic, sourceNote);
+  while (middleSlides.length < middleCount) {
+    middleSlides.push(supplemental[middleSlides.length % supplemental.length]!);
+  }
 
   return {
     title,
@@ -492,7 +531,7 @@ function createFallbackPlan(request: DeckRequest, sources: ResearchSource[]): De
       },
       ...middleSlides,
       {
-        title: "Next Steps",
+        title: "Key Takeaways",
         layout: "closing" as const,
         bullets: fallbackClosingBullets(topic),
         speakerNotes: "Close with a practical action list. Add official links or contact details if available."
@@ -507,7 +546,7 @@ function createFallbackPlan(request: DeckRequest, sources: ResearchSource[]): De
   };
 }
 
-function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] {
+function fallbackSlidesForTopic(topic: string, sourceNote: string, sources: ResearchSource[]): SlidePlan[] {
   if (isLoveTopic(topic)) {
     return [
       {
@@ -566,6 +605,60 @@ function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] 
           "The best relationships combine emotion, trust, and responsibility"
         ],
         visualPrompt: "Clean closing slide with three takeaways",
+        speakerNotes: sourceNote
+      }
+    ];
+  }
+
+  const groundedSlides = sourceGroundedSlides(topic, sources, sourceNote);
+  if (groundedSlides.length) {
+    return groundedSlides;
+  }
+
+  if (isKaggleTopic(topic)) {
+    return [
+      {
+        title: "What Kaggle Provides",
+        layout: "bullets" as const,
+        bullets: [
+          "A shared platform for data science and machine learning work",
+          "Public datasets and browser-based notebooks support exploration and reproducible analysis",
+          "Competitions provide defined problems, evaluation metrics, submissions, and leaderboards",
+          "Courses and community examples help learners build practical skills"
+        ],
+        speakerNotes: sourceNote
+      },
+      {
+        title: "A Typical Kaggle Workflow",
+        layout: "timeline" as const,
+        bullets: [
+          "Choose a dataset or competition with a clearly defined objective",
+          "Explore and prepare the data inside a notebook",
+          "Train and validate a model using an appropriate metric",
+          "Submit results, review feedback, and improve the approach"
+        ],
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Who Uses Kaggle",
+        layout: "bullets" as const,
+        bullets: [
+          "Beginners use guided courses, datasets, and public notebooks to practice",
+          "Practitioners compare techniques and build a visible project portfolio",
+          "Researchers and teams share datasets, code, and reproducible experiments",
+          "Organizations use competitions to invite solutions to defined data problems"
+        ],
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Strengths And Limitations",
+        layout: "comparison" as const,
+        bullets: [
+          "Strength: accessible tools, community examples, and measurable challenges",
+          "Strength: rapid experimentation without a complex local setup",
+          "Limitation: leaderboard performance does not automatically translate to production readiness",
+          "Limitation: dataset quality and competition rules shape what conclusions are valid"
+        ],
         speakerNotes: sourceNote
       }
     ];
@@ -631,49 +724,97 @@ function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] 
     ];
   }
 
+  return genericFallbackSlides(topic, sourceNote);
+}
+
+function sourceGroundedSlides(topic: string, sources: ResearchSource[], sourceNote: string): SlidePlan[] {
+  return sources
+    .filter((source) => {
+      const snippet = source.snippet?.trim() ?? "";
+      return snippet.length >= 40 && !/^provided by the requester\.?$/i.test(snippet) && !looksLikeImageUrl(source.url);
+    })
+    .slice(0, 6)
+    .map((source, index) => {
+      const bullets = snippetBullets(source.snippet!);
+      return {
+        title: cleanSourceTitle(source.title, topic, index),
+        layout: "bullets" as const,
+        bullets,
+        citationUrls: source.url ? [source.url] : [],
+        speakerNotes: `${sourceNote} Source: ${source.title}`
+      };
+    })
+    .filter((slide) => slide.bullets.length > 0);
+}
+
+function snippetBullets(snippet: string): string[] {
+  const cleaned = snippet.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const sentences = cleaned
+    .split(/(?<=[.!?])\s+|\s+[|•]\s+/)
+    .map((sentence) => sentence.replace(/^[-–—]\s*/, "").trim())
+    .filter((sentence) => sentence.length >= 24 && sentence.length <= 220);
+  if (sentences.length >= 2) {
+    return sentences.slice(0, 4).map(trimBullet);
+  }
+  const clauses = cleaned
+    .split(/;\s+|,\s+(?=[A-Z])/)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length >= 24);
+  return (clauses.length ? clauses : [cleaned]).slice(0, 4).map(trimBullet).filter(Boolean);
+}
+
+function trimBullet(value: string): string {
+  const trimmed = value.replace(/\s+/g, " ").replace(/[.;:,]+$/, "").trim();
+  return trimmed.length > 180 ? `${trimmed.slice(0, 177).trim()}...` : trimmed;
+}
+
+function cleanSourceTitle(title: string, topic: string, index: number): string {
+  const cleaned = title.split(/\s+[|–—-]\s+/)[0]?.replace(/\s+/g, " ").trim();
+  if (!cleaned || cleaned.length < 4) return `${titleCase(topic)} Insight ${index + 1}`;
+  return cleaned.length > 62 ? `${cleaned.slice(0, 59).trim()}...` : cleaned;
+}
+
+function genericFallbackSlides(topic: string, sourceNote: string): SlidePlan[] {
+  const namedTopic = titleCase(topic);
   return [
     {
-      title: "Overview",
+      title: `${namedTopic}: Core Idea`,
       layout: "bullets" as const,
       bullets: [
-        `${titleCase(topic)} is the central theme of this presentation`,
-        "The deck gives a clear overview, key ideas, practical meaning, and takeaways",
-        "The focus is useful explanation rather than unsupported claims"
+        `${namedTopic} is best understood through its purpose, participants, process, and outcomes`,
+        "Its practical value depends on how clearly those elements work together",
+        "Reliable conclusions separate verified evidence from assumptions"
       ],
-      visualPrompt: "Simple overview panel",
       speakerNotes: sourceNote
     },
     {
-      title: "Key Points",
+      title: "How The System Works",
       layout: "bullets" as const,
       bullets: [
-        "Start with a simple definition and shared understanding",
-        "Organize the topic into clear themes that are easy to remember",
-        "Use practical examples to make the idea useful for the audience"
+        "Inputs establish the information, resources, and constraints available",
+        "A defined process turns those inputs into decisions, activity, or output",
+        "Results become useful when they can be measured, compared, and improved"
       ],
-      visualPrompt: "Three-part summary layout",
       speakerNotes: sourceNote
     },
     {
-      title: "What To Know",
+      title: "Practical Value",
       layout: "bullets" as const,
       bullets: [
-        "What the topic means in everyday situations",
-        "Why it matters to people, teams, decisions, or behavior",
-        "How to apply the idea responsibly and clearly"
+        `${namedTopic} matters when it helps people learn, decide, create, or collaborate more effectively`,
+        "Clear goals and relevant examples make the value easier to recognize",
+        "Responsible use requires accuracy, transparency, and awareness of limitations"
       ],
-      visualPrompt: "Fact checklist layout",
       speakerNotes: sourceNote
     },
     {
-      title: "Recommended Actions",
+      title: "Key Considerations",
       layout: "bullets" as const,
       bullets: [
-        "Make the message specific to the audience",
-        "Use examples that match the setting",
-        "Close with a memorable takeaway"
+        "Quality depends on the credibility of the underlying information",
+        "Different audiences may need different levels of detail and context",
+        "Benefits should be evaluated alongside constraints, risks, and trade-offs"
       ],
-      visualPrompt: "Action checklist layout",
       speakerNotes: sourceNote
     }
   ];
@@ -706,11 +847,28 @@ function fallbackClosingBullets(topic: string): string[] {
     ];
   }
 
-  return ["Clarify the message", "Use relevant examples", "Share a focused final version"];
+  if (isKaggleTopic(topic)) {
+    return [
+      "Kaggle combines datasets, notebooks, learning resources, and competitions",
+      "Its strongest value comes from hands-on practice and visible iteration",
+      "Strong competition results still require additional validation before production use"
+    ];
+  }
+
+  const namedTopic = titleCase(topic);
+  return [
+    `${namedTopic} is clearest when purpose, process, and outcomes connect`,
+    "Evidence quality determines how confidently conclusions can be presented",
+    "Practical value depends on relevance, responsible use, and measurable results"
+  ];
 }
 
 function isLoveTopic(topic: string): boolean {
   return topic.trim().toLowerCase() === "love";
+}
+
+function isKaggleTopic(topic: string): boolean {
+  return /\bkaggle\b/i.test(topic);
 }
 
 function titleCase(value: string): string {
