@@ -238,4 +238,25 @@ describe("deck editor routes", () => {
     expect(editedBody.html).not.toContain('class="bullets"');
     expect(editedBody.html).not.toContain("<figure");
   });
+
+  it("converts bullet points into one paragraph when the model is unavailable", async () => {
+    const headers = {
+      Authorization: `Bearer ${editorTokenFor(deckId)}`,
+      "Content-Type": "application/json"
+    };
+    const edited = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        html: slideHtml,
+        instruction: "make slide 1 combined into one paragraph, not point by point timeout fallback"
+      })
+    });
+    const editedBody = (await edited.json()) as { html: string; summary: string };
+    expect(edited.status).toBe(200);
+    expect(editedBody.summary).toContain("one presentation-ready paragraph");
+    expect(editedBody.html).toContain('class="subtitle body-copy"');
+    expect(editedBody.html).toContain("First point. Second point.");
+    expect(editedBody.html).not.toContain('class="bullets"');
+  });
 });

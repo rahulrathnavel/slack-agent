@@ -148,6 +148,9 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     .visual { width: 100%; height: min(58vh, 520px); max-height: 100%; align-self: center; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 88%, var(--accent) 12%); display: grid; place-items: center; overflow: hidden; position: relative; }
     .visual img { width: 100%; height: 100%; object-fit: cover; display: block; filter: saturate(.96) contrast(1.02); }
     .visual.visual-contain img { object-fit: contain; object-position: center; padding: clamp(18px, 4vw, 44px); background: var(--surface); }
+    .visual.visual-embedded { border: 0; background: transparent; }
+    .visual.visual-embedded::after { display: none; }
+    .visual.visual-embedded img { padding: 0; background: transparent; }
     .visual::after { content: ""; position: absolute; inset: auto 0 0 0; height: 8px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
     .quote { font-size: clamp(28px, 3.6vw, 56px); line-height: 1.1; border-left: 8px solid var(--accent); padding-left: 28px; overflow-wrap: break-word; }
     .meta { position: fixed; top: 18px; right: 22px; font-size: 13px; color: var(--muted); z-index: 3; }

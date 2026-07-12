@@ -13,7 +13,7 @@ import { renderEditorPage } from "./page.js";
 import { isValidEditorToken } from "./security.js";
 
 const MAX_HTML_BYTES = 1_500_000;
-const EDITOR_TARGETED_AI_TIMEOUT_MS = 18_000;
+const EDITOR_TARGETED_AI_TIMEOUT_MS = 55_000;
 const DECK_ID_PATTERN = /^\d+-[A-Za-z0-9_-]+$/;
 
 interface DeckManifest {
@@ -210,6 +210,8 @@ Rules:
 - Preserve slide class names, data attributes, keyboard/nav mechanics, and existing visual CSS class conventions.
 - Do not include <html>, <head>, <body>, <style>, or <script>.
 - Keep content concise, professional, and presentation-ready.
+- Treat natural-language requests as real editing directions. For example, "combine the points into one paragraph" means remove the bullets and create one clear paragraph from their meaning.
+- A redesign request may change layout, hierarchy, typography, colors, text structure, or image placement, but it must keep the slide usable and coherent.
 - If adding an image URL supplied by the user, use the exact URL from the instruction.
 - For requested right-side images, make the returned article resistant to narrow preview panes by adding inline layout on the article:
   style="grid-template-columns: minmax(0, 1fr) minmax(220px, .48fr); grid-template-rows: minmax(0, 1fr); align-items: center;"
@@ -223,7 +225,7 @@ Rules:
           content: `Editing instruction:\n${instruction}\n\nCurrent slide blocks:\n${slidePayload}`
         }
       ],
-      { model: config.NVIDIA_MODEL_FAST, temperature: 0.08, maxTokens: 2_200, timeoutMs: EDITOR_TARGETED_AI_TIMEOUT_MS }
+      { model: config.NVIDIA_MODEL_FAST, temperature: 0.15, maxTokens: 2_800, timeoutMs: EDITOR_TARGETED_AI_TIMEOUT_MS }
     );
   } catch (error) {
     logger.warn({ error, targetSlides: targetSlides.map((slide) => slide.index + 1) }, "Targeted editor AI failed; using structured slide edit fallback");
@@ -349,6 +351,12 @@ function editSlideBlockWithoutModel(
       nextHtml = changed;
       summaries.push(`Redesigned slide ${index + 1} as a single-line slide.`);
     }
+  } else if (shouldConvertToParagraph(lower)) {
+    const changed = makeSlideParagraph(nextHtml);
+    if (changed) {
+      nextHtml = changed;
+      summaries.push(`Combined slide ${index + 1} into one presentation-ready paragraph.`);
+    }
   } else if (/\b(concise|brief|shorten|simplify|clean)\b/.test(lower)) {
     const changed = keepFirstBulletOnly(nextHtml);
     if (changed) {
@@ -370,6 +378,14 @@ function shouldMakeSingleLine(lowerInstruction: string): boolean {
   );
 }
 
+function shouldConvertToParagraph(lowerInstruction: string): boolean {
+  return (
+    /\b(?:into|to|as)\s+(?:a\s+)?(?:single\s+)?paragraph\b/.test(lowerInstruction) ||
+    /\b(?:combine|merge|join|convert|turn)\b[\s\S]{0,55}\b(?:points?|bullets?|list)\b/.test(lowerInstruction) ||
+    /\b(?:not\s+(?:point\s*by\s*point|bullets?|a\s+list))\b/.test(lowerInstruction)
+  );
+}
+
 function makeSlideSingleLine(slideHtml: string): string | undefined {
   const title = plainTextFromHtml(slideHtml.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/i)?.[1] ?? "This slide");
   const bullets = [...slideHtml.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)]
@@ -388,6 +404,18 @@ function makeSlideSingleLine(slideHtml: string): string | undefined {
     nextHtml = nextHtml.replace(/(<\/h[12]>)/i, `$1\n      <p class="subtitle statement">${escapeHtmlInline(sentence)}</p>`);
   }
   return removeVisual(nextHtml);
+}
+
+function makeSlideParagraph(slideHtml: string): string | undefined {
+  const bulletItems = [...slideHtml.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)]
+    .map((match) => plainTextFromHtml(match[1] ?? ""))
+    .filter(Boolean);
+  if (!bulletItems.length) return undefined;
+
+  const paragraph = bulletItems.join(". ").replace(/\.\s*\./g, ".").replace(/([^.!?])$/, "$1.");
+  const markup = `<p class="subtitle body-copy" style="max-width: 54ch; font-size: clamp(20px, 2.05vw, 32px); line-height: 1.4;">${escapeHtmlInline(paragraph)}</p>`;
+  const nextHtml = slideHtml.replace(/<ul\b[^>]*class="[^"]*\bbullets\b[^"]*"[^>]*>[\s\S]*?<\/ul>/i, markup);
+  return nextHtml === slideHtml ? undefined : nextHtml;
 }
 
 function removeVisual(slideHtml: string): string {
@@ -412,7 +440,7 @@ function singleLineSentence(title: string, bullets: string[]): string {
 }
 
 function setSlideImageUrl(slideHtml: string, imageUrl: string, altText: string): string {
-  const figure = `<figure class="visual visual-contain" style="height: min(46vh, 390px); max-height: 390px; align-self: center;"><img src="${escapeAttributeInline(
+  const figure = `<figure class="visual visual-contain visual-embedded" style="height: min(52vh, 440px); max-height: 440px; align-self: center; border: 0; background: transparent;"><img src="${escapeAttributeInline(
     imageUrl
   )}" alt="${escapeAttributeInline(altText)}" loading="lazy" style="${containImageStyle()}" /></figure>`;
   let nextHtml = slideHtml.replace(/\s*<figure\b[^>]*class="[^"]*\bvisual\b[^"]*"[^>]*>[\s\S]*?<\/figure>/i, "");
@@ -617,10 +645,19 @@ function normalizeReturnedSlideArticle(articleHtml: string, instruction: string)
     );
     nextHtml = ensureFigureStyle(
       nextHtml,
-      "height: min(46vh, 390px); max-height: 390px; align-self: center;"
+      "height: min(52vh, 440px); max-height: 440px; align-self: center; border: 0; background: transparent;"
     );
+    nextHtml = addVisualClass(nextHtml, "visual-embedded");
   }
   return nextHtml;
+}
+
+function addVisualClass(articleHtml: string, className: string): string {
+  return articleHtml.replace(/<figure\b([^>]*)class="([^"]*\bvisual\b[^"]*)"([^>]*)>/i, (_full, before, classes: string, after) => {
+    const names = classes.split(/\s+/).filter(Boolean);
+    if (!names.includes(className)) names.push(className);
+    return `<figure${before}class="${names.join(" ")}"${after}>`;
+  });
 }
 
 function applyVisualPlacement(articleHtml: string, placement: "right" | "left" | "background" | "full"): string {

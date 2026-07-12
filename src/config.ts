@@ -21,7 +21,7 @@ const EnvSchema = z.object({
   NVIDIA_API_KEY: z.string().min(1),
   NVIDIA_MODEL_PRIMARY: z.string().default("mistralai/mistral-medium-3.5-128b"),
   NVIDIA_MODEL_REASONING: z.string().default("moonshotai/kimi-k2.6"),
-  NVIDIA_MODEL_FAST: z.string().default("mistralai/mistral-medium-3.5-128b"),
+  NVIDIA_MODEL_FAST: z.string().default("meta/llama-3.1-8b-instruct"),
   NVIDIA_MODEL_SAFETY: z.string().optional(),
   TAVILY_API_KEY: z.string().optional(),
   OPENVERSE_BASE_URL: z.string().url().default("https://api.openverse.engineering/v1"),
