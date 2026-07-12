@@ -223,11 +223,17 @@ export function renderEditorPage(deckId: string): string {
       slide.classList.remove('visual-left', 'visual-background', 'visual-full');
       slide.classList.add('has-visual', 'visual-right');
       const figure = documentCopy.createElement('figure');
-      figure.className = 'visual';
+      figure.className = 'visual visual-contain';
       const img = documentCopy.createElement('img');
       img.src = imageUrl;
       img.alt = altText;
       img.loading = 'lazy';
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'contain';
+      img.style.objectPosition = 'center';
+      img.style.padding = 'clamp(18px, 4vw, 44px)';
+      img.style.background = '#fff';
       figure.appendChild(img);
       slide.appendChild(figure);
     }
