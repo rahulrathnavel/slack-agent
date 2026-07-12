@@ -164,6 +164,18 @@ describe("deck editor routes", () => {
     expect(imageBody.summary).toContain("Added image to slide 1");
     expect(imageBody.html).toContain('src="https://example.com/logo.png"');
     expect(imageBody.html).toContain("visual-right");
+    expect(imageBody.html).toContain("visual-contain");
+    expect(imageBody.html).toContain("object-fit: contain");
+
+    const repaired = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ html: movedBody.html, instruction: "make the slide 1 image fully visible" })
+    });
+    const repairedBody = (await repaired.json()) as { html: string; summary: string };
+    expect(repairedBody.summary).toContain("fully visible");
+    expect(repairedBody.html).toContain("visual-contain");
+    expect(repairedBody.html).toContain("object-fit: contain");
   });
 
   it("sends only target slide blocks to the model and replaces those blocks", async () => {

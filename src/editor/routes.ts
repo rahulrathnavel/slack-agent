@@ -207,7 +207,7 @@ Rules:
 - Preserve slide class names, data attributes, keyboard/nav mechanics, and existing visual CSS class conventions.
 - Do not include <html>, <head>, <body>, <style>, or <script>.
 - Keep content concise, professional, and presentation-ready.
-- If adding an image URL supplied by the user, use <figure class="visual"><img src="URL" alt="descriptive alt" loading="lazy" /></figure> and add has-visual plus the requested visual-left, visual-right, visual-background, or visual-full class to the article.
+- If adding an image URL supplied by the user, use <figure class="visual visual-contain"><img src="URL" alt="descriptive alt" loading="lazy" style="width: 100%; height: 100%; object-fit: contain; object-position: center; padding: clamp(18px, 4vw, 44px); background: #fff;" /></figure> and add has-visual plus the requested visual-left, visual-right, visual-background, or visual-full class to the article.
 - Never invent image URLs.`
       },
       {
@@ -248,6 +248,13 @@ async function applyFastHtmlEdit(html: string, instruction: string): Promise<{ h
     if (!changed) return undefined;
     nextHtml = changed;
     summaries.push(`Added image to slide ${index + 1}.`);
+  }
+
+  if (/\bimage\b/.test(lower) && /\b(fit|contain|fully visible|visible|uncrop|not crop|no crop)\b/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, containSlideImage);
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Sized slide ${index + 1} image to stay fully visible.`);
   }
 
   if (!imageUrls.length && /\bimage\b/.test(lower) && /\bright\b/.test(lower)) {
@@ -364,9 +371,23 @@ function setSlideImage(url: string, placement: "right" | "left" | "background" |
         return `<article${before}class="${classes.join(" ")}"${after}>`;
       }
     );
-    const visual = `\n    <figure class="visual"><img src="${escapeAttribute(cleaned)}" alt="Slide visual" loading="lazy" /></figure>`;
+    const visual = `\n    <figure class="visual visual-contain"><img src="${escapeAttribute(cleaned)}" alt="Slide visual" loading="lazy" style="${containImageStyle()}" /></figure>`;
     return articleWithClasses.replace(/\s*<\/article>\s*$/i, `${visual}\n  </article>`);
   };
+}
+
+function containSlideImage(slideHtml: string): string | undefined {
+  if (!/<figure\b[^>]*class="[^"]*\bvisual\b/i.test(slideHtml)) return undefined;
+  let nextHtml = slideHtml.replace(/<figure\b([^>]*)class="([^"]*\bvisual\b[^"]*)"([^>]*)>/i, (_full, before, classValue: string, after) => {
+    const classes = classValue.split(/\s+/).filter(Boolean);
+    if (!classes.includes("visual-contain")) classes.push("visual-contain");
+    return `<figure${before}class="${classes.join(" ")}"${after}>`;
+  });
+  nextHtml = nextHtml.replace(/<img\b([^>]*)>/i, (full, attrs: string) => {
+    const withoutStyle = attrs.replace(/\sstyle=(?:"[^"]*"|'[^']*')/i, "");
+    return `<img${withoutStyle} style="${containImageStyle()}">`;
+  });
+  return nextHtml;
 }
 
 function inferTargetSlideIndexes(html: string, instruction: string): number[] {
@@ -471,6 +492,10 @@ function escapeAttribute(value: string): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function containImageStyle(): string {
+  return "width: 100%; height: 100%; object-fit: contain; object-position: center; padding: clamp(18px, 4vw, 44px); background: #fff;";
 }
 
 async function notifySlack(client: WebClient, manifest: DeckManifest, title: string): Promise<boolean> {

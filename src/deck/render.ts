@@ -147,6 +147,7 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     .bullets li::before { content: ""; width: 10px; height: 10px; margin-top: .55em; background: var(--accent-2); transform: rotate(45deg); }
     .visual { width: 100%; height: min(58vh, 520px); max-height: 100%; align-self: center; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 88%, var(--accent) 12%); display: grid; place-items: center; overflow: hidden; position: relative; }
     .visual img { width: 100%; height: 100%; object-fit: cover; display: block; filter: saturate(.96) contrast(1.02); }
+    .visual.visual-contain img { object-fit: contain; object-position: center; padding: clamp(18px, 4vw, 44px); background: var(--surface); }
     .visual::after { content: ""; position: absolute; inset: auto 0 0 0; height: 8px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
     .quote { font-size: clamp(28px, 3.6vw, 56px); line-height: 1.1; border-left: 8px solid var(--accent); padding-left: 28px; overflow-wrap: break-word; }
     .meta { position: fixed; top: 18px; right: 22px; font-size: 13px; color: var(--muted); z-index: 3; }
@@ -259,7 +260,7 @@ function renderSlide(
       ? `<div class="presenters">${request.presenters.map((presenter) => `<span>${escapeHtml(presenter)}</span>`).join("")}</div>`
       : "";
   const visual = asset
-    ? `<figure class="visual"><img src="${escapeAttribute(asset.thumbnailUrl || asset.url)}" alt="${escapeAttribute(
+    ? `<figure class="visual${shouldContainAsset(asset) ? " visual-contain" : ""}"><img src="${escapeAttribute(asset.thumbnailUrl || asset.url)}" alt="${escapeAttribute(
         asset.title
       )}" loading="lazy" /></figure>`
     : "";
@@ -312,6 +313,10 @@ function visualPlacementClass(placement: ImagePlacement = "right"): string {
     return "has-visual visual-full";
   }
   return "has-visual visual-right";
+}
+
+function shouldContainAsset(asset: DeckAsset): boolean {
+  return asset.source === "user" || asset.source === "editable sample";
 }
 
 function headingSizeClass(title: string): string {
