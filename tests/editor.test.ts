@@ -23,7 +23,20 @@ let server: Server;
 let baseUrl: string;
 
 class FakeNvidia extends NvidiaClient {
-  override async chatText(): Promise<string> {
+  override async chatText(messages?: { content: string }[]): Promise<string> {
+    const prompt = messages?.map((message) => message.content).join("\n") ?? "";
+    if (prompt.includes("Current slide blocks")) {
+      const article = slideHtml.match(/<article[\s\S]*<\/article>/)?.[0] ?? "";
+      return JSON.stringify({
+        slides: [
+          {
+            slideNumber: 1,
+            html: article.replace("<li>Second point</li>", "<li>AI rewritten point</li>")
+          }
+        ],
+        summary: "Updated slide 1 only."
+      });
+    }
     return baseHtml.replace("Original copy", "AI updated copy");
   }
 }
@@ -138,5 +151,35 @@ describe("deck editor routes", () => {
     expect(reducedBody.summary).toContain("Kept one main point");
     expect(reducedBody.html).toContain("<li>First point</li>");
     expect(reducedBody.html).not.toContain("<li>Second point</li>");
+
+    const imageAdded = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        html: baseHtml.replace("</body>", `${slideHtml.match(/<article[\s\S]*<\/article>/)?.[0]}</body>`),
+        instruction: "make slide 1 include this image https://example.com/logo.png into right side"
+      })
+    });
+    const imageBody = (await imageAdded.json()) as { html: string; summary: string };
+    expect(imageBody.summary).toContain("Added image to slide 1");
+    expect(imageBody.html).toContain('src="https://example.com/logo.png"');
+    expect(imageBody.html).toContain("visual-right");
+  });
+
+  it("sends only target slide blocks to the model and replaces those blocks", async () => {
+    const headers = {
+      Authorization: `Bearer ${editorTokenFor(deckId)}`,
+      "Content-Type": "application/json"
+    };
+    const edited = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ html: slideHtml, instruction: "make slide 1 more polished" })
+    });
+    const editedBody = (await edited.json()) as { html: string; summary: string };
+    expect(editedBody.summary).toBe("Updated slide 1 only.");
+    expect(editedBody.html).toContain("AI rewritten point");
+    expect(editedBody.html).toContain("<article");
+    expect(editedBody.html).toContain("</html>");
   });
 });
