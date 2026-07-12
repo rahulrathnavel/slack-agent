@@ -36,15 +36,10 @@ class FakeNvidia extends NvidiaClient {
           slides: [
             {
               slideNumber: 1,
-              html: article
-                .replace(
-                  '<article class="slide transition-slide has-visual visual-left">',
-                  '<article class="slide transition-slide has-visual visual-right" style="grid-template-columns: minmax(0, 1fr) minmax(220px, .48fr); grid-template-rows: minmax(0, 1fr); align-items: center;">'
-                )
-                .replace(
-                  '<figure class="visual"><img src="/sample.jpg" alt="Sample" /></figure>',
-                  '<figure class="visual visual-contain" style="height: min(46vh, 390px); max-height: 390px; align-self: center;"><img src="https://example.com/logo.png" alt="Example logo" loading="lazy" style="width: 100%; height: 100%; object-fit: contain; object-position: center; padding: clamp(14px, 3vw, 36px); background: #fff;" /></figure>'
-                )
+              html: article.replace(
+                '<figure class="visual"><img src="/sample.jpg" alt="Sample" /></figure>',
+                '<figure class="visual"><img src="https://example.com/logo.png" alt="Example logo" loading="lazy" /></figure>'
+              )
             }
           ],
           summary: "Added and fitted the image on slide 1."

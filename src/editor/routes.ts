@@ -227,7 +227,7 @@ Rules:
   for (const item of patch.slides) {
     const index = item.slideNumber - 1;
     if (!targetIndexes.includes(index)) continue;
-    replacements.set(index, validatedArticleHtml(item.html));
+    replacements.set(index, normalizeReturnedSlideArticle(validatedArticleHtml(item.html), instruction));
   }
   if (!replacements.size) {
     throw new EditorInputError("The AI response did not include an updated slide block.");
@@ -430,6 +430,82 @@ function validatedArticleHtml(value: string): string {
 
 function extractImageUrls(value: string): string[] {
   return [...value.matchAll(/https?:\/\/[^\s"'<>]+/gi)].map((match) => cleanInlineUrl(match[0]));
+}
+
+function normalizeReturnedSlideArticle(articleHtml: string, instruction: string): string {
+  const lower = instruction.toLowerCase();
+  const imageUrls = extractImageUrls(instruction);
+  if (!imageUrls.length || !/\bimage\b/.test(lower)) return articleHtml;
+
+  const suppliedUrl = imageUrls[0];
+  if (suppliedUrl && !articleHtml.includes(suppliedUrl)) {
+    throw new EditorInputError("The AI response did not embed the supplied image URL. Try again with the direct image link.");
+  }
+
+  const placement = lower.includes("left")
+    ? "left"
+    : lower.includes("background")
+      ? "background"
+      : lower.includes("full")
+        ? "full"
+        : "right";
+
+  let nextHtml = applyVisualPlacement(articleHtml, placement);
+  nextHtml = containSlideImage(nextHtml) ?? nextHtml;
+  if (placement === "right" || placement === "left") {
+    nextHtml = ensureArticleStyle(
+      nextHtml,
+      "grid-template-columns: minmax(0, 1fr) minmax(220px, .48fr); grid-template-rows: minmax(0, 1fr); align-items: center;"
+    );
+    nextHtml = ensureFigureStyle(
+      nextHtml,
+      "height: min(46vh, 390px); max-height: 390px; align-self: center;"
+    );
+  }
+  return nextHtml;
+}
+
+function applyVisualPlacement(articleHtml: string, placement: "right" | "left" | "background" | "full"): string {
+  const visualClass = placement === "right" ? "visual-right" : `visual-${placement}`;
+  return articleHtml.replace(/<article\b([^>]*)class="([^"]*)"([^>]*)>/i, (_full, before, classValue: string, after) => {
+    const classes = classValue
+      .split(/\s+/)
+      .filter((name) => name && !["visual-left", "visual-right", "visual-background", "visual-full"].includes(name));
+    if (!classes.includes("has-visual")) classes.push("has-visual");
+    classes.push(visualClass);
+    return `<article${before}class="${classes.join(" ")}"${after}>`;
+  });
+}
+
+function ensureArticleStyle(articleHtml: string, requiredStyle: string): string {
+  return articleHtml.replace(/<article\b([^>]*)>/i, (full, attrs: string) => {
+    const styleMatch = attrs.match(/\sstyle=(?:"([^"]*)"|'([^']*)')/i);
+    if (!styleMatch) return `<article${attrs} style="${requiredStyle}">`;
+    const currentStyle = styleMatch[1] ?? styleMatch[2] ?? "";
+    const mergedStyle = mergeCssDeclarations(currentStyle, requiredStyle);
+    return full.replace(styleMatch[0], ` style="${mergedStyle}"`);
+  });
+}
+
+function ensureFigureStyle(articleHtml: string, requiredStyle: string): string {
+  return articleHtml.replace(/<figure\b([^>]*)class="([^"]*\bvisual\b[^"]*)"([^>]*)>/i, (full, before, classValue: string, after) => {
+    const tag = `<figure${before}class="${classValue}"${after}>`;
+    const styleMatch = tag.match(/\sstyle=(?:"([^"]*)"|'([^']*)')/i);
+    if (!styleMatch) return `<figure${before}class="${classValue}"${after} style="${requiredStyle}">`;
+    const currentStyle = styleMatch[1] ?? styleMatch[2] ?? "";
+    const mergedStyle = mergeCssDeclarations(currentStyle, requiredStyle);
+    return full.replace(styleMatch[0], ` style="${mergedStyle}"`);
+  });
+}
+
+function mergeCssDeclarations(currentStyle: string, requiredStyle: string): string {
+  const declarations = new Map<string, string>();
+  for (const declaration of `${currentStyle};${requiredStyle}`.split(";")) {
+    const [property, ...valueParts] = declaration.split(":");
+    const value = valueParts.join(":").trim();
+    if (property?.trim() && value) declarations.set(property.trim().toLowerCase(), value);
+  }
+  return [...declarations.entries()].map(([property, value]) => `${property}: ${value}`).join("; ") + ";";
 }
 
 function slideNumberToIndex(value: string): number {
