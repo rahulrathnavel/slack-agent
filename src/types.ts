@@ -22,6 +22,12 @@ export type BrandStyle =
   | "dark-stage"
   | "minimal";
 
+export type SlideTransition = "slide" | "fade" | "zoom" | "none";
+
+export type DeckTransition = SlideTransition | "varied";
+
+export type ImagePlacement = "right" | "left" | "background" | "full";
+
 export interface DeckRequest {
   topic: string;
   title?: string;
@@ -39,6 +45,8 @@ export interface DeckRequest {
   customContext?: string;
   assetLinks?: string;
   advancedPrompt?: string;
+  transition?: DeckTransition;
+  slideTransitions?: Record<number, SlideTransition>;
   requesterUserId?: string;
   channelId?: string;
   threadTs?: string;
@@ -62,6 +70,8 @@ export interface DeckAsset {
   license?: string;
   licenseUrl?: string;
   source?: string;
+  slideIndex?: number;
+  placement?: ImagePlacement;
 }
 
 export interface SlidePlan {
@@ -89,6 +99,7 @@ export interface GeneratedDeck {
   deckId: string;
   title: string;
   publicUrl: string;
+  editorUrl: string;
   localDir: string;
   plan: DeckPlan;
   sources: ResearchSource[];

@@ -18,6 +18,11 @@ interface OpenverseResponse {
 }
 
 export async function searchLicensedImages(query: string, count = 5): Promise<DeckAsset[]> {
+  if (isTooBroadForImageSearch(query)) {
+    logger.info({ query }, "Skipping licensed image search for broad abstract prompt");
+    return [];
+  }
+
   const queries = buildImageQueries(query);
   const seen = new Set<string>();
   const assets: DeckAsset[] = [];
@@ -49,10 +54,7 @@ function buildImageQueries(query: string): string[] {
 
   return [
     cleaned,
-    shortQuery,
-    `${shortQuery || cleaned} business meeting`,
-    "team collaboration",
-    "business presentation"
+    shortQuery
   ].filter((value, index, all) => value && all.indexOf(value) === index);
 }
 
@@ -80,6 +82,8 @@ async function runOpenverseSearch(query: string, count = 5): Promise<DeckAsset[]
       .filter((image): image is Required<Pick<OpenverseImage, "title" | "url">> & OpenverseImage => {
         return Boolean(image.title && image.url);
       })
+      .filter((image) => isSafeImageResult(image))
+      .filter((image) => isRelevantImageResult(query, image))
       .slice(0, count)
       .map((image) => ({
         title: image.title,
@@ -95,4 +99,68 @@ async function runOpenverseSearch(query: string, count = 5): Promise<DeckAsset[]
     logger.warn({ error }, "Openverse image search crashed");
     return [];
   }
+}
+
+function isTooBroadForImageSearch(query: string): boolean {
+  const words = query
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2);
+  const abstractWords = new Set([
+    "love",
+    "life",
+    "success",
+    "happiness",
+    "peace",
+    "future",
+    "growth",
+    "mindset",
+    "dream",
+    "trust",
+    "hope"
+  ]);
+
+  return words.length <= 1 && words.some((word) => abstractWords.has(word));
+}
+
+function isSafeImageResult(image: OpenverseImage): boolean {
+  const text = `${image.title ?? ""} ${image.creator ?? ""} ${image.url ?? ""}`.toLowerCase();
+  const unsafeTerms = [
+    "adult",
+    "babe",
+    "bikini",
+    "boudoir",
+    "cleavage",
+    "erotic",
+    "lingerie",
+    "naked",
+    "nude",
+    "pinup",
+    "porn",
+    "seductive",
+    "sexy",
+    "strip",
+    "swimsuit",
+    "underwear",
+    "woman portrait",
+    "girl portrait"
+  ];
+
+  return !unsafeTerms.some((term) => text.includes(term));
+}
+
+function isRelevantImageResult(query: string, image: OpenverseImage): boolean {
+  const queryWords = query
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 3);
+  const haystack = `${image.title ?? ""} ${image.creator ?? ""} ${image.source ?? ""}`.toLowerCase();
+
+  if (!queryWords.length) {
+    return false;
+  }
+
+  return queryWords.some((word) => haystack.includes(word));
 }

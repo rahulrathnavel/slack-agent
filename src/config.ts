@@ -47,6 +47,8 @@ export const config = {
   dataDir: path.resolve(projectRoot, parsed.data.DATA_DIR),
   publicDir: path.resolve(projectRoot, parsed.data.PUBLIC_DIR),
   decksDir: path.resolve(projectRoot, parsed.data.PUBLIC_DIR, "decks"),
+  editorDraftsDir: path.resolve(projectRoot, parsed.data.DATA_DIR, "editor-drafts"),
+  editorRevisionsDir: path.resolve(projectRoot, parsed.data.DATA_DIR, "editor-revisions"),
   installationDir: path.resolve(projectRoot, parsed.data.DATA_DIR, "installations"),
   slackScopes: [
     "app_mentions:read",

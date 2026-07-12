@@ -2,7 +2,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import sanitizeFilename from "sanitize-filename";
 import { writeJsonFile } from "../storage/files.js";
-import type { DeckAsset, DeckPlan, DeckRequest, ResearchSource, SlidePlan } from "../types.js";
+import type {
+  DeckAsset,
+  DeckPlan,
+  DeckRequest,
+  ImagePlacement,
+  ResearchSource,
+  SlidePlan,
+  SlideTransition
+} from "../types.js";
 
 interface RenderDeckArgs {
   deckId: string;
@@ -68,7 +76,9 @@ export async function renderDeckSite(args: RenderDeckArgs): Promise<void> {
 
 function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs): string {
   const theme = THEME_COLORS[request.brandStyle] ?? THEME_COLORS["executive-clean"]!;
-  const slides = plan.slides.map((slide, index) => renderSlide(slide, index, plan.slides.length, assets, request));
+  const slides = plan.slides.map((slide, index) =>
+    renderSlide(slide, index, plan.slides.length, assets, request, transitionForSlide(request, index))
+  );
   const safeTitle = escapeHtml(plan.title);
   const sourceItems = sources
     .slice(0, 18)
@@ -101,9 +111,23 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     body { overflow: hidden; }
     .deck-shell { width: 100vw; height: 100vh; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
     .slides { min-height: 0; height: 100%; position: relative; overflow: hidden; }
-    .slide { position: absolute; inset: 0; min-height: 0; padding: clamp(24px, 4.4vh, 54px) clamp(24px, 5.6vw, 82px); display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .78fr); gap: clamp(22px, 3.6vw, 58px); align-items: stretch; opacity: 0; overflow: hidden; transform: translateX(2vw); transition: opacity 240ms ease, transform 240ms ease; pointer-events: none; }
+    .slide { position: absolute; inset: 0; min-height: 0; padding: clamp(24px, 4.4vh, 54px) clamp(24px, 5.6vw, 82px); display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(22px, 3.6vw, 58px); align-items: stretch; opacity: 0; overflow: hidden; pointer-events: none; }
     .slide.active { opacity: 1; transform: translateX(0); pointer-events: auto; }
+    .slide.transition-slide { transform: translateX(2vw); transition: opacity 240ms ease, transform 240ms ease; }
+    .slide.transition-fade { transform: none; transition: opacity 260ms ease; }
+    .slide.transition-zoom { transform: scale(.985); transition: opacity 260ms ease, transform 260ms ease; }
+    .slide.transition-none { transform: none; transition: none; }
+    .slide.transition-slide.active, .slide.transition-fade.active, .slide.transition-zoom.active, .slide.transition-none.active { transform: translateX(0) scale(1); opacity: 1; }
     .slide-title { grid-template-columns: minmax(0, 1fr); align-content: center; }
+    .has-visual { grid-template-columns: minmax(0, 1fr) minmax(280px, .78fr); }
+    .visual-left .content { order: 2; }
+    .visual-left .visual { order: 1; }
+    .visual-full { grid-template-columns: 1fr; grid-template-rows: minmax(0, auto) minmax(240px, 1fr); }
+    .visual-full .visual { height: min(46vh, 420px); }
+    .visual-background { grid-template-columns: 1fr; }
+    .visual-background .visual { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; opacity: .2; }
+    .visual-background .visual::after { display: none; }
+    .visual-background .content { position: relative; z-index: 1; max-width: 980px; }
     .content { min-width: 0; max-height: 100%; align-self: center; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
     .slide-title .content { max-width: 1040px; }
     .kicker { color: var(--accent); font-size: clamp(11px, 1.1vw, 14px); font-weight: 800; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 14px; }
@@ -123,11 +147,11 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     .bullets li::before { content: ""; width: 10px; height: 10px; margin-top: .55em; background: var(--accent-2); transform: rotate(45deg); }
     .visual { width: 100%; height: min(58vh, 520px); max-height: 100%; align-self: center; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 88%, var(--accent) 12%); display: grid; place-items: center; overflow: hidden; position: relative; }
     .visual img { width: 100%; height: 100%; object-fit: cover; display: block; filter: saturate(.96) contrast(1.02); }
-    .visual .placeholder { padding: 32px; font-size: clamp(20px, 2vw, 28px); line-height: 1.25; color: var(--muted); }
     .visual::after { content: ""; position: absolute; inset: auto 0 0 0; height: 8px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
     .quote { font-size: clamp(28px, 3.6vw, 56px); line-height: 1.1; border-left: 8px solid var(--accent); padding-left: 28px; overflow-wrap: break-word; }
     .meta { position: fixed; top: 18px; right: 22px; font-size: 13px; color: var(--muted); z-index: 3; }
-    .controls { border-top: 1px solid var(--line); display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: center; padding: 12px 18px; background: color-mix(in srgb, var(--bg) 94%, var(--surface)); }
+    .controls { min-width: 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(48px, 1fr) auto; gap: 14px; align-items: center; padding: 12px 18px; background: color-mix(in srgb, var(--bg) 94%, var(--surface)); }
+    .controls > div:first-child { display: flex; gap: 4px; }
     button { appearance: none; border: 1px solid var(--line); background: var(--surface); color: var(--ink); min-width: 42px; height: 42px; font: inherit; font-weight: 800; cursor: pointer; }
     button:hover { border-color: var(--accent); color: var(--accent); }
     .progress { height: 8px; background: color-mix(in srgb, var(--ink) 12%, transparent); position: relative; overflow: hidden; }
@@ -143,13 +167,18 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     a { color: var(--accent); }
     @media (max-width: 820px) {
       body { overflow: hidden; }
-      .slide { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, .82fr); gap: 18px; padding: 60px 22px 22px; align-content: center; }
+      .slide, .has-visual { min-width: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, .82fr); gap: 18px; padding: 60px 22px 22px; align-content: center; }
       .slide-title { grid-template-rows: 1fr; }
+      .visual-left .content, .visual-left .visual { order: initial; }
       .visual { height: min(30vh, 260px); }
-      h1 { font-size: clamp(34px, 11vw, 60px); }
-      h2 { font-size: clamp(28px, 9vw, 48px); }
+      .content { width: 100%; min-width: 0; }
+      h1 { font-size: clamp(30px, 9vw, 48px); overflow-wrap: anywhere; }
+      h2 { font-size: clamp(26px, 7.5vw, 42px); overflow-wrap: anywhere; }
       .bullets li { font-size: clamp(17px, 5vw, 24px); }
       .meta { top: 12px; right: 14px; }
+      .controls { gap: 8px; padding: 8px; }
+      button { min-width: 38px; height: 38px; }
+      .counter { min-width: 48px; }
     }
     @media print {
       body { overflow: visible; }
@@ -217,12 +246,14 @@ function renderSlide(
   index: number,
   total: number,
   assets: DeckAsset[],
-  request: DeckRequest
+  request: DeckRequest,
+  transition: SlideTransition
 ): string {
   const asset = chooseAsset(slide, assets, index);
   const titleTag = index === 0 ? "h1" : "h2";
   const bullets = slide.bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("");
   const headingClass = headingSizeClass(slide.title);
+  const visualClass = asset ? visualPlacementClass(asset.placement) : "";
   const presenters =
     index === 0 && request.presenters.length
       ? `<div class="presenters">${request.presenters.map((presenter) => `<span>${escapeHtml(presenter)}</span>`).join("")}</div>`
@@ -231,13 +262,13 @@ function renderSlide(
     ? `<figure class="visual"><img src="${escapeAttribute(asset.thumbnailUrl || asset.url)}" alt="${escapeAttribute(
         asset.title
       )}" loading="lazy" /></figure>`
-    : `<figure class="visual"><div class="placeholder">${escapeHtml(slide.visualPrompt || slide.imageQuery || request.topic)}</div></figure>`;
+    : "";
   const layoutClass = index === 0 ? "slide-title" : `slide-${slide.layout}`;
-  const visualMarkup = index === 0 ? "" : visual;
+  const visualMarkup = visual;
   const notes = escapeAttribute(slide.speakerNotes ?? "");
 
   if (slide.layout === "quote") {
-    return `<article class="slide ${layoutClass} ${headingClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
+    return `<article class="slide transition-${transition} ${layoutClass} ${headingClass} ${visualClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
       <div class="content">
         <div class="kicker">${index + 1} / ${total}</div>
         <blockquote class="quote">${escapeHtml(slide.bullets[0] || slide.title)}</blockquote>
@@ -246,7 +277,7 @@ function renderSlide(
     </article>`;
   }
 
-  return `<article class="slide ${layoutClass} ${headingClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
+  return `<article class="slide transition-${transition} ${layoutClass} ${headingClass} ${visualClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
     <div class="content">
       <div class="kicker">${index + 1} / ${total}</div>
       <${titleTag}>${escapeHtml(slide.title)}</${titleTag}>
@@ -256,6 +287,31 @@ function renderSlide(
     </div>
     ${visualMarkup}
   </article>`;
+}
+
+function transitionForSlide(request: DeckRequest, index: number): SlideTransition {
+  const perSlide = request.slideTransitions?.[index];
+  if (perSlide) {
+    return perSlide;
+  }
+  if (request.transition && request.transition !== "varied") {
+    return request.transition;
+  }
+  const varied: SlideTransition[] = ["fade", "slide", "zoom", "slide"];
+  return varied[index % varied.length]!;
+}
+
+function visualPlacementClass(placement: ImagePlacement = "right"): string {
+  if (placement === "left") {
+    return "has-visual visual-left";
+  }
+  if (placement === "background") {
+    return "has-visual visual-background";
+  }
+  if (placement === "full") {
+    return "has-visual visual-full";
+  }
+  return "has-visual visual-right";
 }
 
 function headingSizeClass(title: string): string {
@@ -272,16 +328,21 @@ function chooseAsset(slide: SlidePlan, assets: DeckAsset[], index: number): Deck
   if (!assets.length) {
     return undefined;
   }
+  const slideAsset = assets.find((asset) => asset.slideIndex === index);
+  if (slideAsset) {
+    return slideAsset;
+  }
+
   const query = (slide.imageQuery || slide.visualPrompt || slide.title).toLowerCase();
-  return (
-    assets.find((asset) => {
-      const haystack = `${asset.title} ${asset.creator ?? ""} ${asset.source ?? ""}`.toLowerCase();
-      return query
-        .split(/\W+/)
-        .filter((word) => word.length > 3)
-        .some((word) => haystack.includes(word));
-    }) ?? assets[index % assets.length]
-  );
+  const queryWords = query.split(/\W+/).filter((word) => word.length > 3);
+  if (!queryWords.length) {
+    return undefined;
+  }
+
+  return assets.find((asset) => {
+    const haystack = `${asset.title} ${asset.creator ?? ""} ${asset.source ?? ""}`.toLowerCase();
+    return queryWords.some((word) => haystack.includes(word));
+  });
 }
 
 function escapeHtml(value: string): string {

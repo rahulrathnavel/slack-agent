@@ -84,7 +84,7 @@ The modal supports:
 - brand style
 - Slack context toggle
 - web research toggle
-- licensed images toggle
+- explicit slide image URLs
 - citations
 - speaker notes
 - custom links and notes
@@ -109,6 +109,21 @@ After a deck is generated, Slack returns a deck ID. A revision can be requested 
 ```text
 revise <deckId> make slide 2 more executive and reduce text
 ```
+
+### Deck Playground
+
+Every completed Slack response includes an authenticated **Open editor** button. Deck Playground provides:
+
+- a sandboxed live presentation preview
+- the complete editable `index.html` source
+- source navigation for headings, paragraph text, and image `src` values
+- an AI assistant for slide-specific text and layout changes
+- image upload directly into a selected slide
+- separate draft saving without changing the live deck
+- automatic revision backups on publication
+- a **Finish editing** action that publishes the HTML and posts the refreshed deck link back to Slack
+
+When a command requests an image position without a URL, such as `slide 2: image right`, PioltPPT inserts a replaceable sample image. The image source can be changed directly in Deck Playground or replaced through the assistant/upload flow.
 
 ### MCP Support
 
@@ -146,6 +161,10 @@ flowchart LR
   Renderer --> Storage["public/decks/<deckId>"]
   Storage --> Link["Public deck URL"]
   Link --> Slack
+  Storage --> Editor["Authenticated Deck Playground"]
+  Editor --> Drafts["Private drafts and revision backups"]
+  Editor --> Model
+  Editor --> Slack
   App --> MCP["MCP routes"]
 ```
 
@@ -159,6 +178,9 @@ flowchart LR
 | `src/slack/blocks.ts` | Builds Slack Block Kit UI and parses modal submissions. |
 | `src/agent/deckAgent.ts` | Orchestrates research, context gathering, AI deck planning, fallback planning, rendering, and revision. |
 | `src/deck/render.ts` | Renders deck plans into live static HTML presentations. |
+| `src/editor/routes.ts` | Serves authenticated editor, draft, AI, image upload, and publish APIs. |
+| `src/editor/page.ts` | Renders the responsive Deck Playground interface. |
+| `src/editor/security.ts` | Creates and validates per-deck editor access tokens. |
 | `src/services/nvidia.ts` | Calls NVIDIA's OpenAI-compatible chat completion API. |
 | `src/services/tavily.ts` | Fetches web research results. |
 | `src/services/openverse.ts` | Fetches licensed image metadata. |
@@ -167,6 +189,8 @@ flowchart LR
 | `src/mcp/stdio.ts` | Provides an MCP stdio server entry point. |
 | `src/storage/files.ts` | Handles local JSON/file persistence. |
 | `tests/render.test.ts` | Verifies static deck rendering. |
+| `tests/editor.test.ts` | Verifies editor authentication, drafts, AI editing, uploads, backups, and publishing. |
+| `tests/fallback.test.ts` | Verifies relevant source-grounded and offline fallback content. |
 
 ## Repository Structure
 
@@ -401,13 +425,14 @@ Manual validation checklist:
 2. The app parses either direct text or modal input.
 3. The request is sanitized and normalized.
 4. Optional research/context services run in parallel.
-5. NVIDIA generates a structured deck plan.
+5. NVIDIA generates a structured deck plan and retries with the primary model if validation fails.
 6. Zod validates the plan.
-7. If AI planning fails, a safe topic-specific fallback plan is generated.
+7. If both AI plans fail, verified source snippets or a safe topic-specific fallback produce the slides.
 8. The renderer writes `index.html` and `deck.json`.
-9. Slack receives a public deck link and deck ID.
+9. Slack receives public deck, authenticated editor, and revision links.
+10. Deck Playground saves private drafts and publishes the final HTML back to the original Slack conversation.
 
-For one-shot slash commands, licensed image search is disabled by default to avoid unrelated stock-like visuals. Image and theme customization are planned for the `improve-uiux` branch.
+One-shot slash commands remain text-only by default. Images appear only when the requester supplies a URL or uploads an image in Deck Playground.
 
 ## Safety Notes
 

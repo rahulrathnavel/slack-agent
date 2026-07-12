@@ -51,6 +51,70 @@ describe("renderDeckSite", () => {
     const manifest = await fs.readFile(path.join(dir, "deck.json"), "utf8");
     expect(html).toContain("Customer onboarding");
     expect(html).toContain("Deck controls");
+    expect(html).toContain("transition-fade");
+    expect(html).toContain("transition-slide");
+    expect(html).toContain("transition-zoom");
+    expect(html).not.toContain("<figure class=\"visual\"");
     expect(JSON.parse(manifest).deckId).toBe("test");
+  });
+
+  it("renders content-only slides unless a user image is assigned", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pioltppt-"));
+    const request: DeckRequest = {
+      topic: "Anger",
+      title: "Anger",
+      presenters: [],
+      audience: "general",
+      slideCount: 3,
+      tone: "educational",
+      brandStyle: "dark-stage",
+      useSlackContext: false,
+      useWebResearch: false,
+      useLicensedImages: false,
+      includeCitations: true,
+      includeSpeakerNotes: true,
+      includeVideoLinks: false,
+      transition: "fade",
+      slideTransitions: { 1: "zoom" }
+    };
+    const plan: DeckPlan = {
+      title: "Anger",
+      subtitle: "A practical overview",
+      presenters: [],
+      narrative: "Explain anger.",
+      recommendedFollowups: [],
+      sources: [],
+      slides: [
+        { title: "Anger", layout: "title", bullets: [] },
+        { title: "Recognize the Signal", layout: "bullets", bullets: ["Anger points to a boundary or unmet need"] },
+        { title: "Thank You", layout: "closing", bullets: ["Use the signal wisely"] }
+      ]
+    };
+
+    await renderDeckSite({
+      deckId: "test-images",
+      outputDir: dir,
+      publicUrl: "http://localhost/decks/test-images/",
+      plan,
+      request,
+      assets: [
+        {
+          title: "User image for slide 2",
+          url: "https://example.com/anger.png",
+          thumbnailUrl: "https://example.com/anger.png",
+          source: "user",
+          slideIndex: 1,
+          placement: "left"
+        }
+      ],
+      sources: []
+    });
+
+    const html = await fs.readFile(path.join(dir, "index.html"), "utf8");
+    expect(html).toContain("transition-fade");
+    expect(html).toContain("transition-zoom");
+    expect(html).toContain("visual-left");
+    expect(html).toContain("https://example.com/anger.png");
+    expect(html).not.toContain("placeholder");
   });
 });

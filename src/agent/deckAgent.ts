@@ -3,20 +3,23 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { config } from "../config.js";
 import { renderDeckSite } from "../deck/render.js";
+import { editorUrlFor } from "../editor/security.js";
 import { logger } from "../logger.js";
 import { redactSensitiveText, truncateForPrompt } from "../safety.js";
 import { readJsonFile } from "../storage/files.js";
-import { searchLicensedImages } from "../services/openverse.js";
 import { searchSlackContext } from "../services/slackSearch.js";
 import { searchWeb } from "../services/tavily.js";
 import { NvidiaClient } from "../services/nvidia.js";
 import type {
   DeckAsset,
   DeckPlan,
+  DeckTransition,
   DeckRequest,
   GeneratedDeck,
+  ImagePlacement,
   ResearchSource,
   SlackContextSearchResult,
+  SlideTransition,
   SlidePlan
 } from "../types.js";
 
@@ -56,17 +59,26 @@ interface GenerateOptions {
   actionToken?: string;
 }
 
+interface AdvancedControls {
+  assets: DeckAsset[];
+  transition?: DeckTransition;
+  slideTransitions: Record<number, SlideTransition>;
+}
+
 export class DeckAgent {
   constructor(private readonly nvidia = new NvidiaClient()) {}
 
   async generate(request: DeckRequest, options: GenerateOptions = {}): Promise<GeneratedDeck> {
     const safeRequest = sanitizeRequest(request);
     const topic = safeRequest.title || safeRequest.topic;
+    const controls = parseAdvancedControls(safeRequest);
+    const requestWithControls = {
+      ...safeRequest,
+      transition: controls.transition ?? safeRequest.transition ?? "varied",
+      slideTransitions: controls.slideTransitions
+    };
 
     const webPromise: Promise<ResearchSource[]> = safeRequest.useWebResearch ? searchWeb(topic, 7) : Promise.resolve([]);
-    const assetPromise: Promise<DeckAsset[]> = safeRequest.useLicensedImages
-      ? searchLicensedImages(topic, Math.min(8, safeRequest.slideCount))
-      : Promise.resolve([]);
     const slackPromise: Promise<SlackContextSearchResult> = safeRequest.useSlackContext
       ? searchSlackContext({
           query: topic,
@@ -74,10 +86,11 @@ export class DeckAgent {
           userToken: options.userToken,
           actionToken: options.actionToken,
           contextChannelId: safeRequest.channelId
-        })
+      })
       : Promise.resolve({ sources: [], text: "" });
 
-    const [webSources, assets, slackContext] = await Promise.all([webPromise, assetPromise, slackPromise]);
+    const [webSources, slackContext] = await Promise.all([webPromise, slackPromise]);
+    const assets = controls.assets;
 
     if (slackContext.unavailableReason) {
       logger.info({ reason: slackContext.unavailableReason }, "Slack RTS context unavailable");
@@ -89,7 +102,7 @@ export class DeckAgent {
       ...parseUserSources(safeRequest.customContext, safeRequest.assetLinks)
     ]);
 
-    const plan = await this.createPlan(safeRequest, sources, assets, slackContext.text);
+    const plan = await this.createPlan(requestWithControls, sources, assets, slackContext.text);
     const deckId = `${Date.now()}-${nanoid(8)}`;
     const localDir = path.join(config.decksDir, deckId);
     const publicUrl = `${config.PUBLIC_BASE_URL.replace(/\/$/, "")}/decks/${deckId}/`;
@@ -99,7 +112,7 @@ export class DeckAgent {
       outputDir: localDir,
       publicUrl,
       plan,
-      request: safeRequest,
+      request: requestWithControls,
       assets,
       sources
     });
@@ -108,6 +121,7 @@ export class DeckAgent {
       deckId,
       title: plan.title,
       publicUrl,
+      editorUrl: editorUrlFor(deckId),
       localDir,
       plan,
       sources,
@@ -144,6 +158,7 @@ export class DeckAgent {
       deckId,
       title: revisedPlan.title,
       publicUrl: manifest.publicUrl,
+      editorUrl: editorUrlFor(deckId),
       localDir: path.join(config.decksDir, deckId),
       plan: revisedPlan,
       sources: manifest.sources,
@@ -211,10 +226,16 @@ Rules:
 - Exactly ${request.slideCount} slides.
 - Slide 1 must work as the title slide.
 - Last slide must be a closing or action slide.
-- Make bullets executive-readable: short, concrete, non-generic.
+- Make bullets presentation-ready: short, concrete, non-generic.
+- Never write instructions to the presenter as slide bullets.
+- Never use placeholders such as "explain", "define", "add examples", "insert", "verify facts", or "[Name]" as visible slide content.
+- For broad abstract topics, create a polished educational/business overview with useful principles, examples, and takeaways.
+- Generate content-only slides by default.
+- Do not reserve image space, ask for images, or describe image prompts in visible slide content.
+- Use images only when user-provided image URLs are listed below.
 - Use citations only from the source URLs provided below.
 - If sources are thin, say so in speaker notes and avoid invented facts.
-- If licensed assets are available, include imageQuery values that match them.
+- If user-provided image assets are available, include imageQuery values that match the intended slide.
 - Include speakerNotes ${request.includeSpeakerNotes ? "for every slide" : "only when useful"}.
 
 Request:
@@ -238,8 +259,8 @@ ${truncateForPrompt(slackContextText, 8_000)}
 Research sources:
 ${truncateForPrompt(sourcePack || "No research sources available.", 10_000)}
 
-Licensed assets:
-${truncateForPrompt(assetPack || "No licensed assets available.", 4_000)}`
+User image assets:
+${truncateForPrompt(assetPack || "No user image assets available.", 4_000)}`
       }
     ];
 
@@ -250,9 +271,19 @@ ${truncateForPrompt(assetPack || "No licensed assets available.", 4_000)}`
         maxTokens: 12_000
       });
       return normalizePlan(plan, request, sources);
-    } catch (error) {
-      logger.warn({ error }, "Model deck plan failed; using fallback plan");
-      return createFallbackPlan(request, sources);
+    } catch (reasoningError) {
+      logger.warn({ error: reasoningError }, "Reasoning model deck plan failed; retrying with primary model");
+      try {
+        const plan = await this.nvidia.chatJson(messages, DeckPlanSchema, {
+          model: config.NVIDIA_MODEL_PRIMARY,
+          temperature: 0.15,
+          maxTokens: 12_000
+        });
+        return normalizePlan(plan, request, sources);
+      } catch (primaryError) {
+        logger.warn({ error: primaryError }, "Both deck plan models failed; using source-grounded fallback plan");
+        return createFallbackPlan(request, sources);
+      }
     }
   }
 
@@ -321,8 +352,135 @@ function sanitizeRequest(request: DeckRequest): DeckRequest {
     slideCount: Math.max(3, Math.min(12, Math.round(request.slideCount))),
     customContext: request.customContext ? redactSensitiveText(request.customContext) : undefined,
     assetLinks: request.assetLinks ? redactSensitiveText(request.assetLinks) : undefined,
-    advancedPrompt: request.advancedPrompt ? redactSensitiveText(request.advancedPrompt) : undefined
+    advancedPrompt: request.advancedPrompt ? redactSensitiveText(request.advancedPrompt) : undefined,
+    transition: request.transition,
+    slideTransitions: request.slideTransitions
   };
+}
+
+export function parseAdvancedControls(request: DeckRequest): AdvancedControls {
+  const text = `${request.assetLinks ?? ""}\n${request.advancedPrompt ?? ""}\n${request.customContext ?? ""}`;
+  const assets: DeckAsset[] = [];
+  const disabledSlides = parseDisabledImageSlides(text);
+  const usedUrls = new Set<string>();
+
+  for (const match of text.matchAll(/slide\s*(\d+)\s*:\s*image(?:\s+(left|right|background|full))?\s+(https?:\/\/\S+)/gi)) {
+    const slideIndex = Number(match[1]) - 1;
+    const placement = normalizeImagePlacement(match[2]);
+    const url = cleanUrl(match[3]);
+    if (slideIndex >= 0 && url && !disabledSlides.has(slideIndex) && !usedUrls.has(url)) {
+      assets.push(userImageAsset(url, slideIndex, placement));
+      usedUrls.add(url);
+    }
+  }
+
+  for (const match of text.matchAll(/image\s+slide\s*(\d+)\s*:\s*(?:\s*(left|right|background|full)\s+)?(https?:\/\/\S+)/gi)) {
+    const slideIndex = Number(match[1]) - 1;
+    const placement = normalizeImagePlacement(match[2]);
+    const url = cleanUrl(match[3]);
+    if (slideIndex >= 0 && url && !disabledSlides.has(slideIndex) && !usedUrls.has(url)) {
+      assets.push(userImageAsset(url, slideIndex, placement));
+      usedUrls.add(url);
+    }
+  }
+
+  let nextSlideIndex = 1;
+  for (const urlMatch of text.matchAll(/https?:\/\/\S+/gi)) {
+    const url = cleanUrl(urlMatch[0]);
+    if (!url || usedUrls.has(url) || !looksLikeImageUrl(url)) {
+      continue;
+    }
+    while (disabledSlides.has(nextSlideIndex)) {
+      nextSlideIndex += 1;
+    }
+    if (nextSlideIndex < request.slideCount) {
+      assets.push(userImageAsset(url, nextSlideIndex, "right"));
+      usedUrls.add(url);
+      nextSlideIndex += 1;
+    }
+  }
+
+  for (const match of text.matchAll(/slide\s*(\d+)\s*:\s*image(?:\s+(left|right|background|full))?(?!\s+https?:\/\/)(?=\s*(?:[|\n]|$))/gi)) {
+    const slideIndex = Number(match[1]) - 1;
+    const placement = normalizeImagePlacement(match[2]);
+    if (slideIndex >= 0 && !disabledSlides.has(slideIndex) && !assets.some((asset) => asset.slideIndex === slideIndex)) {
+      assets.push(sampleImageAsset(slideIndex, placement));
+    }
+  }
+
+  return {
+    assets,
+    transition: parseTransition(text),
+    slideTransitions: parseSlideTransitions(text)
+  };
+}
+
+function parseDisabledImageSlides(text: string): Set<number> {
+  const disabled = new Set<number>();
+  for (const match of text.matchAll(/slide\s*(\d+)\s*:\s*(?:no\s+image|text\s+only|content\s+only)/gi)) {
+    const slideIndex = Number(match[1]) - 1;
+    if (slideIndex >= 0) {
+      disabled.add(slideIndex);
+    }
+  }
+  return disabled;
+}
+
+function parseTransition(text: string): DeckTransition | undefined {
+  const match = text.match(/(?:^|[|\n])\s*transition\s*:\s*(varied|fade|slide|zoom|none)\b/i);
+  return match?.[1] ? (match[1].toLowerCase() as DeckTransition) : undefined;
+}
+
+function parseSlideTransitions(text: string): Record<number, SlideTransition> {
+  const transitions: Record<number, SlideTransition> = {};
+  const pattern = /slide\s*(\d+)\s*(?::\s*transition|transition\s*:)\s*(fade|slide|zoom|none)\b/gi;
+  for (const match of text.matchAll(pattern)) {
+    const slideIndex = Number(match[1]) - 1;
+    if (slideIndex >= 0 && match[2]) {
+      transitions[slideIndex] = match[2].toLowerCase() as SlideTransition;
+    }
+  }
+  return transitions;
+}
+
+function normalizeImagePlacement(value?: string): ImagePlacement {
+  if (value === "left" || value === "background" || value === "full") {
+    return value;
+  }
+  return "right";
+}
+
+function userImageAsset(url: string, slideIndex: number, placement: ImagePlacement): DeckAsset {
+  return {
+    title: `User image for slide ${slideIndex + 1}`,
+    url,
+    thumbnailUrl: url,
+    source: "user",
+    slideIndex,
+    placement
+  };
+}
+
+function sampleImageAsset(slideIndex: number, placement: ImagePlacement): DeckAsset {
+  return {
+    title: `Editable sample image for slide ${slideIndex + 1}`,
+    url: "/assets/pioltppt-open-image.svg",
+    thumbnailUrl: "/assets/pioltppt-open-image.svg",
+    creator: "PioltPPT",
+    license: "MIT",
+    source: "editable sample",
+    slideIndex,
+    placement
+  };
+}
+
+function cleanUrl(value?: string): string | undefined {
+  const cleaned = value?.trim().replace(/[)>.,;]+$/g, "");
+  return cleaned || undefined;
+}
+
+function looksLikeImageUrl(url: string): boolean {
+  return /\.(png|jpe?g|webp|gif|avif)(?:\?|#|$)/i.test(url);
 }
 
 function normalizePlan(plan: DeckPlan, request: DeckRequest, sources: ResearchSource[]): DeckPlan {
@@ -345,13 +503,18 @@ function normalizePlan(plan: DeckPlan, request: DeckRequest, sources: ResearchSo
   };
 }
 
-function createFallbackPlan(request: DeckRequest, sources: ResearchSource[]): DeckPlan {
+export function createFallbackPlan(request: DeckRequest, sources: ResearchSource[]): DeckPlan {
   const title = request.title || request.topic;
   const topic = request.topic;
   const sourceNote = sources.length
-    ? "Use the source list to replace placeholders with verified details."
+    ? "Built from the available source material; confirm time-sensitive details before presenting."
     : "No verified sources were available, so this slide avoids invented facts.";
-  const middleSlides = fallbackSlidesForTopic(topic, sourceNote).slice(0, Math.max(1, request.slideCount - 2));
+  const middleCount = Math.max(1, request.slideCount - 2);
+  const middleSlides = fallbackSlidesForTopic(topic, sourceNote, sources).slice(0, middleCount);
+  const supplemental = genericFallbackSlides(topic, sourceNote);
+  while (middleSlides.length < middleCount) {
+    middleSlides.push(supplemental[middleSlides.length % supplemental.length]!);
+  }
 
   return {
     title,
@@ -368,7 +531,7 @@ function createFallbackPlan(request: DeckRequest, sources: ResearchSource[]): De
       },
       ...middleSlides,
       {
-        title: "Next Steps",
+        title: "Key Takeaways",
         layout: "closing" as const,
         bullets: fallbackClosingBullets(topic),
         speakerNotes: "Close with a practical action list. Add official links or contact details if available."
@@ -383,7 +546,124 @@ function createFallbackPlan(request: DeckRequest, sources: ResearchSource[]): De
   };
 }
 
-function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] {
+function fallbackSlidesForTopic(topic: string, sourceNote: string, sources: ResearchSource[]): SlidePlan[] {
+  if (isLoveTopic(topic)) {
+    return [
+      {
+        title: "What Love Means",
+        layout: "bullets" as const,
+        bullets: [
+          "A durable bond built through care, respect, trust, and responsibility",
+          "More than emotion: love is shown through consistent choices and behavior",
+          "Healthy love supports dignity, safety, growth, and honest communication"
+        ],
+        visualPrompt: "Minimal abstract visual of connection and trust",
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Forms Of Love",
+        layout: "bullets" as const,
+        bullets: [
+          "Family love: protection, belonging, and long-term support",
+          "Friendship: loyalty, empathy, shared values, and mutual respect",
+          "Romantic love: commitment, vulnerability, partnership, and emotional maturity",
+          "Self-respect: boundaries, self-care, and the ability to give without losing oneself"
+        ],
+        visualPrompt: "Clean relationship map with four categories",
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Why Love Matters",
+        layout: "bullets" as const,
+        bullets: [
+          "Builds trust and emotional resilience in relationships",
+          "Improves communication, cooperation, and conflict recovery",
+          "Creates a sense of meaning, belonging, and shared responsibility",
+          "Encourages patience, forgiveness, and long-term personal growth"
+        ],
+        visualPrompt: "Professional wellbeing and connection diagram",
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Practicing Love Well",
+        layout: "bullets" as const,
+        bullets: [
+          "Listen fully before responding",
+          "Respect boundaries and communicate expectations clearly",
+          "Choose consistency over dramatic gestures",
+          "Repair mistakes with accountability, not excuses"
+        ],
+        visualPrompt: "Action checklist for healthy relationships",
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Key Takeaways",
+        layout: "bullets" as const,
+        bullets: [
+          "Love is strongest when care and respect are practiced daily",
+          "Healthy love protects both connection and individuality",
+          "The best relationships combine emotion, trust, and responsibility"
+        ],
+        visualPrompt: "Clean closing slide with three takeaways",
+        speakerNotes: sourceNote
+      }
+    ];
+  }
+
+  const groundedSlides = sourceGroundedSlides(topic, sources, sourceNote);
+  if (groundedSlides.length) {
+    return groundedSlides;
+  }
+
+  if (isKaggleTopic(topic)) {
+    return [
+      {
+        title: "What Kaggle Provides",
+        layout: "bullets" as const,
+        bullets: [
+          "A shared platform for data science and machine learning work",
+          "Public datasets and browser-based notebooks support exploration and reproducible analysis",
+          "Competitions provide defined problems, evaluation metrics, submissions, and leaderboards",
+          "Courses and community examples help learners build practical skills"
+        ],
+        speakerNotes: sourceNote
+      },
+      {
+        title: "A Typical Kaggle Workflow",
+        layout: "timeline" as const,
+        bullets: [
+          "Choose a dataset or competition with a clearly defined objective",
+          "Explore and prepare the data inside a notebook",
+          "Train and validate a model using an appropriate metric",
+          "Submit results, review feedback, and improve the approach"
+        ],
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Who Uses Kaggle",
+        layout: "bullets" as const,
+        bullets: [
+          "Beginners use guided courses, datasets, and public notebooks to practice",
+          "Practitioners compare techniques and build a visible project portfolio",
+          "Researchers and teams share datasets, code, and reproducible experiments",
+          "Organizations use competitions to invite solutions to defined data problems"
+        ],
+        speakerNotes: sourceNote
+      },
+      {
+        title: "Strengths And Limitations",
+        layout: "comparison" as const,
+        bullets: [
+          "Strength: accessible tools, community examples, and measurable challenges",
+          "Strength: rapid experimentation without a complex local setup",
+          "Limitation: leaderboard performance does not automatically translate to production readiness",
+          "Limitation: dataset quality and competition rules shape what conclusions are valid"
+        ],
+        speakerNotes: sourceNote
+      }
+    ];
+  }
+
   if (/\b(university|college|campus|school|institute)\b/i.test(topic)) {
     return [
       {
@@ -444,55 +724,106 @@ function fallbackSlidesForTopic(topic: string, sourceNote: string): SlidePlan[] 
     ];
   }
 
+  return genericFallbackSlides(topic, sourceNote);
+}
+
+function sourceGroundedSlides(topic: string, sources: ResearchSource[], sourceNote: string): SlidePlan[] {
+  return sources
+    .filter((source) => {
+      const snippet = source.snippet?.trim() ?? "";
+      return snippet.length >= 40 && !/^provided by the requester\.?$/i.test(snippet) && !looksLikeImageUrl(source.url);
+    })
+    .slice(0, 6)
+    .map((source, index) => {
+      const bullets = snippetBullets(source.snippet!);
+      return {
+        title: cleanSourceTitle(source.title, topic, index),
+        layout: "bullets" as const,
+        bullets,
+        citationUrls: source.url ? [source.url] : [],
+        speakerNotes: `${sourceNote} Source: ${source.title}`
+      };
+    })
+    .filter((slide) => slide.bullets.length > 0);
+}
+
+function snippetBullets(snippet: string): string[] {
+  const cleaned = snippet.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const sentences = cleaned
+    .split(/(?<=[.!?])\s+|\s+[|•]\s+/)
+    .map((sentence) => sentence.replace(/^[-–—]\s*/, "").trim())
+    .filter((sentence) => sentence.length >= 24 && sentence.length <= 220);
+  if (sentences.length >= 2) {
+    return sentences.slice(0, 4).map(trimBullet);
+  }
+  const clauses = cleaned
+    .split(/;\s+|,\s+(?=[A-Z])/)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length >= 24);
+  return (clauses.length ? clauses : [cleaned]).slice(0, 4).map(trimBullet).filter(Boolean);
+}
+
+function trimBullet(value: string): string {
+  const trimmed = value.replace(/\s+/g, " ").replace(/[.;:,]+$/, "").trim();
+  return trimmed.length > 180 ? `${trimmed.slice(0, 177).trim()}...` : trimmed;
+}
+
+function cleanSourceTitle(title: string, topic: string, index: number): string {
+  const cleaned = title.split(/\s+[|–—-]\s+/)[0]?.replace(/\s+/g, " ").trim();
+  if (!cleaned || cleaned.length < 4) return `${titleCase(topic)} Insight ${index + 1}`;
+  return cleaned.length > 62 ? `${cleaned.slice(0, 59).trim()}...` : cleaned;
+}
+
+function genericFallbackSlides(topic: string, sourceNote: string): SlidePlan[] {
+  const namedTopic = titleCase(topic);
   return [
     {
-      title: "Overview",
+      title: `${namedTopic}: Core Idea`,
       layout: "bullets" as const,
       bullets: [
-        `Explain what ${topic} is and why it matters`,
-        "Define the audience, objective, and expected outcome",
-        "Separate verified facts from assumptions or open questions"
+        `${namedTopic} is best understood through its purpose, participants, process, and outcomes`,
+        "Its practical value depends on how clearly those elements work together",
+        "Reliable conclusions separate verified evidence from assumptions"
       ],
-      visualPrompt: "Simple overview panel",
       speakerNotes: sourceNote
     },
     {
-      title: "Key Points",
+      title: "How The System Works",
       layout: "bullets" as const,
       bullets: [
-        "Summarize the most important facts in plain language",
-        "Group details into 3-4 clear themes",
-        "Keep each slide focused on one message"
+        "Inputs establish the information, resources, and constraints available",
+        "A defined process turns those inputs into decisions, activity, or output",
+        "Results become useful when they can be measured, compared, and improved"
       ],
-      visualPrompt: "Three-part summary layout",
       speakerNotes: sourceNote
     },
     {
-      title: "What To Know",
+      title: "Practical Value",
       layout: "bullets" as const,
       bullets: [
-        "Add relevant facts, examples, constraints, or comparisons",
-        "Call out what is confirmed and what still needs checking",
-        "Use official links or pasted notes for precise details"
+        `${namedTopic} matters when it helps people learn, decide, create, or collaborate more effectively`,
+        "Clear goals and relevant examples make the value easier to recognize",
+        "Responsible use requires accuracy, transparency, and awareness of limitations"
       ],
-      visualPrompt: "Fact checklist layout",
       speakerNotes: sourceNote
     },
     {
-      title: "Recommended Actions",
+      title: "Key Considerations",
       layout: "bullets" as const,
       bullets: [
-        "Confirm missing facts",
-        "Add audience-specific examples",
-        "Prepare the final version for sharing"
+        "Quality depends on the credibility of the underlying information",
+        "Different audiences may need different levels of detail and context",
+        "Benefits should be evaluated alongside constraints, risks, and trade-offs"
       ],
-      visualPrompt: "Action checklist layout",
       speakerNotes: sourceNote
     }
   ];
 }
 
 function fallbackSubtitle(topic: string, request: DeckRequest): string {
+  if (isLoveTopic(topic)) {
+    return "A professional overview of connection, trust, and emotional maturity";
+  }
   if (/\b(university|college|campus|school|institute)\b/i.test(topic)) {
     return "A clean campus overview for students, parents, and visitors";
   }
@@ -500,6 +831,14 @@ function fallbackSubtitle(topic: string, request: DeckRequest): string {
 }
 
 function fallbackClosingBullets(topic: string): string[] {
+  if (isLoveTopic(topic)) {
+    return [
+      "Practice care through consistent action",
+      "Protect respect, trust, and healthy boundaries",
+      "Build relationships with patience and accountability"
+    ];
+  }
+
   if (/\b(university|college|campus|school|institute)\b/i.test(topic)) {
     return [
       "Add official department and admission links",
@@ -508,7 +847,32 @@ function fallbackClosingBullets(topic: string): string[] {
     ];
   }
 
-  return ["Verify the facts", "Add audience-specific examples", "Share the final version"];
+  if (isKaggleTopic(topic)) {
+    return [
+      "Kaggle combines datasets, notebooks, learning resources, and competitions",
+      "Its strongest value comes from hands-on practice and visible iteration",
+      "Strong competition results still require additional validation before production use"
+    ];
+  }
+
+  const namedTopic = titleCase(topic);
+  return [
+    `${namedTopic} is clearest when purpose, process, and outcomes connect`,
+    "Evidence quality determines how confidently conclusions can be presented",
+    "Practical value depends on relevance, responsible use, and measurable results"
+  ];
+}
+
+function isLoveTopic(topic: string): boolean {
+  return topic.trim().toLowerCase() === "love";
+}
+
+function isKaggleTopic(topic: string): boolean {
+  return /\bkaggle\b/i.test(topic);
+}
+
+function titleCase(value: string): string {
+  return value.replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
 }
 
 function parseUserSources(customContext?: string, assetLinks?: string): ResearchSource[] {

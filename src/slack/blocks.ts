@@ -107,14 +107,12 @@ export function deckWizardModal(metadata: {
           initial_options: [
             checkboxOption("Use Slack context", "slack_context"),
             checkboxOption("Use web research", "web_research"),
-            checkboxOption("Use licensed images", "licensed_images"),
             checkboxOption("Include source citations", "citations"),
             checkboxOption("Speaker notes", "speaker_notes")
           ],
           options: [
             checkboxOption("Use Slack context", "slack_context"),
             checkboxOption("Use web research", "web_research"),
-            checkboxOption("Use licensed images", "licensed_images"),
             checkboxOption("Include source citations", "citations"),
             checkboxOption("Speaker notes", "speaker_notes"),
             checkboxOption("Video links when useful", "video_links")
@@ -123,7 +121,8 @@ export function deckWizardModal(metadata: {
       },
       inputText("assets", "assets", "Custom files, links, or references", true, {
         multiline: true,
-        placeholder: "Paste URLs, Slack message links, image/video links, or describe uploaded files to use."
+        placeholder:
+          "Optional image URLs. Examples: slide 2: image right https://example.com/photo.jpg | slide 3: image full https://example.com/chart.png"
       }),
       inputText("context", "context", "Messy notes or source context", true, {
         multiline: true,
@@ -131,7 +130,8 @@ export function deckWizardModal(metadata: {
       }),
       inputText("advanced_prompt", "advanced_prompt", "Advanced customization prompt", true, {
         multiline: true,
-        placeholder: "Example: make it McKinsey-style, use short punchy headlines, include a risks slide, avoid hype."
+        placeholder:
+          "Examples: transition: fade | slide 2: transition zoom | slide 2: image right https://example.com/photo.jpg | slide 3: no image"
       })
     ]
   };
@@ -162,6 +162,7 @@ export function finishedBlocks(params: {
   deckId: string;
   title: string;
   publicUrl: string;
+  editorUrl: string;
   sourceCount: number;
   assetCount: number;
 }): KnownBlock[] {
@@ -184,6 +185,13 @@ export function finishedBlocks(params: {
         },
         {
           type: "button",
+          text: { type: "plain_text", text: "Open editor" },
+          url: params.editorUrl,
+          action_id: "open_deck_editor",
+          style: "primary"
+        },
+        {
+          type: "button",
           text: { type: "plain_text", text: "Revise deck" },
           action_id: ACTION_OPEN_REVISE,
           value: JSON.stringify({ deckId: params.deckId, publicUrl: params.publicUrl })
@@ -195,7 +203,7 @@ export function finishedBlocks(params: {
       elements: [
         {
           type: "mrkdwn",
-          text: `${params.sourceCount} sources | ${params.assetCount} licensed assets | keyboard controls and print/PDF mode included`
+          text: `${params.sourceCount} sources | ${params.assetCount} user images | keyboard controls and print/PDF mode included`
         }
       ]
     }
@@ -284,7 +292,9 @@ export function parseDeckRequestFromView(view: {
 }
 
 export function quickDraftRequest(topic: string, userId: string, channelId?: string, threadTs?: string): DeckRequest {
-  const cleanTopic = normalizeQuickTopic(topic) || "A practical presentation";
+  const [topicInput = "", ...controlParts] = topic.split(/\s*\|\s*/);
+  const cleanTopic = normalizeQuickTopic(topicInput) || "A practical presentation";
+  const advancedPrompt = controlParts.map((part) => part.trim()).filter(Boolean).join(" | ");
   const isEducationOverview = /\b(university|college|campus|school|institute|overview)\b/i.test(cleanTopic);
   const isExecutive = /\b(executive|leadership|board|investor|readiness|launch|strategy)\b/i.test(cleanTopic);
 
@@ -302,6 +312,7 @@ export function quickDraftRequest(topic: string, userId: string, channelId?: str
     includeCitations: true,
     includeSpeakerNotes: true,
     includeVideoLinks: false,
+    advancedPrompt: advancedPrompt || undefined,
     requesterUserId: userId,
     channelId,
     threadTs
