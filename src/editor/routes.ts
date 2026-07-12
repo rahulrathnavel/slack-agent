@@ -207,7 +207,12 @@ Rules:
 - Preserve slide class names, data attributes, keyboard/nav mechanics, and existing visual CSS class conventions.
 - Do not include <html>, <head>, <body>, <style>, or <script>.
 - Keep content concise, professional, and presentation-ready.
-- If adding an image URL supplied by the user, use <figure class="visual visual-contain"><img src="URL" alt="descriptive alt" loading="lazy" style="width: 100%; height: 100%; object-fit: contain; object-position: center; padding: clamp(18px, 4vw, 44px); background: #fff;" /></figure> and add has-visual plus the requested visual-left, visual-right, visual-background, or visual-full class to the article.
+- If adding an image URL supplied by the user, use the exact URL from the instruction.
+- For requested right-side images, make the returned article resistant to narrow preview panes by adding inline layout on the article:
+  style="grid-template-columns: minmax(0, 1fr) minmax(220px, .48fr); grid-template-rows: minmax(0, 1fr); align-items: center;"
+- For requested right-side images, use:
+  <figure class="visual visual-contain" style="height: min(46vh, 390px); max-height: 390px; align-self: center;"><img src="URL" alt="descriptive alt" loading="lazy" style="width: 100%; height: 100%; object-fit: contain; object-position: center; padding: clamp(14px, 3vw, 36px); background: #fff;" /></figure>
+- If text plus image cannot fit well, reduce bullets to the strongest 1-2 points before returning the article.
 - Never invent image URLs.`
       },
       {
@@ -241,14 +246,7 @@ async function applyFastHtmlEdit(html: string, instruction: string): Promise<{ h
   const summaries: string[] = [];
   const lower = instruction.toLowerCase();
   const imageUrls = extractImageUrls(instruction);
-  const placement = inferImagePlacement(lower);
-
-  if (imageUrls.length) {
-    const changed = updateSlide(nextHtml, index, setSlideImage(imageUrls[0]!, placement));
-    if (!changed) return undefined;
-    nextHtml = changed;
-    summaries.push(`Added image to slide ${index + 1}.`);
-  }
+  if (imageUrls.length) return undefined;
 
   if (/\bimage\b/.test(lower) && /\b(fit|contain|fully visible|visible|uncrop|not crop|no crop)\b/.test(lower)) {
     const changed = updateSlide(nextHtml, index, containSlideImage);
@@ -355,27 +353,6 @@ function moveSlideImage(placement: "right" | "left" | "background" | "full"): (s
   };
 }
 
-function setSlideImage(url: string, placement: "right" | "left" | "background" | "full"): (slideHtml: string) => string {
-  return (slideHtml) => {
-    const cleaned = cleanInlineUrl(url);
-    const withoutExistingVisual = slideHtml.replace(/\s*<figure\b[^>]*class="[^"]*\bvisual\b[^"]*"[^>]*>[\s\S]*?<\/figure>/i, "");
-    const visualClass = placement === "right" ? "visual-right" : `visual-${placement}`;
-    const articleWithClasses = withoutExistingVisual.replace(
-      /<article\b([^>]*)class="([^"]*)"([^>]*)>/i,
-      (_full, before, classValue: string, after) => {
-        const classes = classValue
-          .split(/\s+/)
-          .filter((name) => name && !["visual-left", "visual-right", "visual-background", "visual-full"].includes(name));
-        if (!classes.includes("has-visual")) classes.push("has-visual");
-        classes.push(visualClass);
-        return `<article${before}class="${classes.join(" ")}"${after}>`;
-      }
-    );
-    const visual = `\n    <figure class="visual visual-contain"><img src="${escapeAttribute(cleaned)}" alt="Slide visual" loading="lazy" style="${containImageStyle()}" /></figure>`;
-    return articleWithClasses.replace(/\s*<\/article>\s*$/i, `${visual}\n  </article>`);
-  };
-}
-
 function containSlideImage(slideHtml: string): string | undefined {
   if (!/<figure\b[^>]*class="[^"]*\bvisual\b/i.test(slideHtml)) return undefined;
   let nextHtml = slideHtml.replace(/<figure\b([^>]*)class="([^"]*\bvisual\b[^"]*)"([^>]*)>/i, (_full, before, classValue: string, after) => {
@@ -455,13 +432,6 @@ function extractImageUrls(value: string): string[] {
   return [...value.matchAll(/https?:\/\/[^\s"'<>]+/gi)].map((match) => cleanInlineUrl(match[0]));
 }
 
-function inferImagePlacement(value: string): "right" | "left" | "background" | "full" {
-  if (/\bleft\b/.test(value)) return "left";
-  if (/\bbackground\b/.test(value)) return "background";
-  if (/\bfull\b|full-?width/.test(value)) return "full";
-  return "right";
-}
-
 function slideNumberToIndex(value: string): number {
   const normalized = value.toLowerCase();
   const words: Record<string, number> = {
@@ -484,14 +454,6 @@ function slideNumberToIndex(value: string): number {
 
 function cleanInlineUrl(value: string): string {
   return value.trim().replace(/[),.;]+$/g, "");
-}
-
-function escapeAttribute(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }
 
 function containImageStyle(): string {

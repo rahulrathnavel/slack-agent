@@ -21,12 +21,35 @@ const slideHtml = `<!doctype html><html><body>
 </body></html>`;
 let server: Server;
 let baseUrl: string;
+let lastTargetedPrompt = "";
+let lastTargetedUserPayload = "";
 
 class FakeNvidia extends NvidiaClient {
   override async chatText(messages?: { content: string }[]): Promise<string> {
     const prompt = messages?.map((message) => message.content).join("\n") ?? "";
     if (prompt.includes("Current slide blocks")) {
+      lastTargetedPrompt = prompt;
+      lastTargetedUserPayload = messages?.at(-1)?.content ?? "";
       const article = slideHtml.match(/<article[\s\S]*<\/article>/)?.[0] ?? "";
+      if (prompt.includes("https://example.com/logo.png")) {
+        return JSON.stringify({
+          slides: [
+            {
+              slideNumber: 1,
+              html: article
+                .replace(
+                  '<article class="slide transition-slide has-visual visual-left">',
+                  '<article class="slide transition-slide has-visual visual-right" style="grid-template-columns: minmax(0, 1fr) minmax(220px, .48fr); grid-template-rows: minmax(0, 1fr); align-items: center;">'
+                )
+                .replace(
+                  '<figure class="visual"><img src="/sample.jpg" alt="Sample" /></figure>',
+                  '<figure class="visual visual-contain" style="height: min(46vh, 390px); max-height: 390px; align-self: center;"><img src="https://example.com/logo.png" alt="Example logo" loading="lazy" style="width: 100%; height: 100%; object-fit: contain; object-position: center; padding: clamp(14px, 3vw, 36px); background: #fff;" /></figure>'
+                )
+            }
+          ],
+          summary: "Added and fitted the image on slide 1."
+        });
+      }
       return JSON.stringify({
         slides: [
           {
@@ -161,11 +184,16 @@ describe("deck editor routes", () => {
       })
     });
     const imageBody = (await imageAdded.json()) as { html: string; summary: string };
-    expect(imageBody.summary).toContain("Added image to slide 1");
+    expect(imageBody.summary).toContain("Added and fitted the image");
     expect(imageBody.html).toContain('src="https://example.com/logo.png"');
     expect(imageBody.html).toContain("visual-right");
     expect(imageBody.html).toContain("visual-contain");
     expect(imageBody.html).toContain("object-fit: contain");
+    expect(imageBody.html).toContain("grid-template-columns: minmax(0, 1fr) minmax(220px, .48fr)");
+    expect(lastTargetedPrompt).toContain("Current slide blocks");
+    expect(lastTargetedUserPayload).toContain("<article");
+    expect(lastTargetedUserPayload).not.toContain("<!doctype html>");
+    expect(lastTargetedUserPayload).not.toContain("<html");
 
     const repaired = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
       method: "POST",
