@@ -30,6 +30,9 @@ class FakeNvidia extends NvidiaClient {
     if (prompt.includes("Current slide blocks")) {
       lastTargetedPrompt = prompt;
       lastTargetedUserPayload = messages?.at(-1)?.content ?? "";
+      if (prompt.includes("timeout fallback")) {
+        throw new Error("Simulated model timeout");
+      }
       const article = slideHtml.match(/<article[\s\S]*<\/article>/)?.[0] ?? "";
       if (prompt.includes("https://example.com/logo.png")) {
         return JSON.stringify({
@@ -216,5 +219,23 @@ describe("deck editor routes", () => {
     expect(editedBody.html).toContain("AI rewritten point");
     expect(editedBody.html).toContain("<article");
     expect(editedBody.html).toContain("</html>");
+  });
+
+  it("falls back to a structured slide edit when the model does not respond", async () => {
+    const headers = {
+      Authorization: `Bearer ${editorTokenFor(deckId)}`,
+      "Content-Type": "application/json"
+    };
+    const edited = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ html: slideHtml, instruction: "redesign slide 1 with a single line alone timeout fallback" })
+    });
+    const editedBody = (await edited.json()) as { html: string; summary: string };
+    expect(edited.status).toBe(200);
+    expect(editedBody.summary).toContain("single-line slide");
+    expect(editedBody.html).toContain('class="subtitle statement"');
+    expect(editedBody.html).not.toContain('class="bullets"');
+    expect(editedBody.html).not.toContain("<figure");
   });
 });

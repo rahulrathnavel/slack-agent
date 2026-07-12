@@ -13,6 +13,7 @@ import { renderEditorPage } from "./page.js";
 import { isValidEditorToken } from "./security.js";
 
 const MAX_HTML_BYTES = 1_500_000;
+const EDITOR_TARGETED_AI_TIMEOUT_MS = 18_000;
 const DECK_ID_PATTERN = /^\d+-[A-Za-z0-9_-]+$/;
 
 interface DeckManifest {
@@ -174,7 +175,7 @@ Do not wrap the result in Markdown fences.`
         content: `Editing instruction:\n${instruction}\n\nCurrent HTML:\n${html}`
       }
     ],
-    { model: config.NVIDIA_MODEL_PRIMARY, temperature: 0.15, maxTokens: 16_000 }
+    { model: config.NVIDIA_MODEL_PRIMARY, temperature: 0.15, maxTokens: 8_000, timeoutMs: 35_000 }
   );
   const updated = validatedHtml(extractHtml(output));
   return { html: updated, summary: "The requested change is ready in the preview." };
@@ -195,11 +196,13 @@ async function editTargetedSlides(
   const slidePayload = targetSlides
     .map((slide) => `SLIDE ${slide.index + 1}\n${slide.html}`)
     .join("\n\n---\n\n");
-  const output = await nvidia.chatText(
-    [
-      {
-        role: "system",
-        content: `You are the PioltPPT slide editor. Edit only the supplied slide article blocks.
+  let output: string;
+  try {
+    output = await nvidia.chatText(
+      [
+        {
+          role: "system",
+          content: `You are the PioltPPT slide editor. Edit only the supplied slide article blocks.
 Return strict JSON only:
 {"slides":[{"slideNumber":2,"html":"<article class=\\"slide ...\\">...</article>"}],"summary":"short user-facing summary"}
 Rules:
@@ -214,15 +217,29 @@ Rules:
   <figure class="visual visual-contain" style="height: min(46vh, 390px); max-height: 390px; align-self: center;"><img src="URL" alt="descriptive alt" loading="lazy" style="width: 100%; height: 100%; object-fit: contain; object-position: center; padding: clamp(14px, 3vw, 36px); background: #fff;" /></figure>
 - If text plus image cannot fit well, reduce bullets to the strongest 1-2 points before returning the article.
 - Never invent image URLs.`
-      },
-      {
-        role: "user",
-        content: `Editing instruction:\n${instruction}\n\nCurrent slide blocks:\n${slidePayload}`
-      }
-    ],
-    { model: config.NVIDIA_MODEL_FAST, temperature: 0.12, maxTokens: 6_000 }
-  );
-  const patch = parseSlidePatch(output);
+        },
+        {
+          role: "user",
+          content: `Editing instruction:\n${instruction}\n\nCurrent slide blocks:\n${slidePayload}`
+        }
+      ],
+      { model: config.NVIDIA_MODEL_FAST, temperature: 0.08, maxTokens: 2_200, timeoutMs: EDITOR_TARGETED_AI_TIMEOUT_MS }
+    );
+  } catch (error) {
+    logger.warn({ error, targetSlides: targetSlides.map((slide) => slide.index + 1) }, "Targeted editor AI failed; using structured slide edit fallback");
+    const fallback = applyStructuredSlideEdit(html, instruction, targetIndexes);
+    if (fallback) return fallback;
+    throw error;
+  }
+  let patch: SlidePatch;
+  try {
+    patch = parseSlidePatch(output);
+  } catch (error) {
+    logger.warn({ error, targetSlides: targetSlides.map((slide) => slide.index + 1) }, "Targeted editor AI returned invalid patch; using structured slide edit fallback");
+    const fallback = applyStructuredSlideEdit(html, instruction, targetIndexes);
+    if (fallback) return fallback;
+    throw error;
+  }
   const replacements = new Map<number, string>();
   for (const item of patch.slides) {
     const index = item.slideNumber - 1;
@@ -286,6 +303,147 @@ async function applyFastHtmlEdit(html: string, instruction: string): Promise<{ h
 
   if (!summaries.length || nextHtml === html) return undefined;
   return { html: validatedHtml(nextHtml), summary: summaries.join(" ") };
+}
+
+function applyStructuredSlideEdit(
+  html: string,
+  instruction: string,
+  targetIndexes: number[]
+): { html: string; summary: string } | undefined {
+  const replacements = new Map<number, string>();
+  const summaries: string[] = [];
+  for (const index of targetIndexes) {
+    const block = extractSlideBlocks(html)[index];
+    if (!block) continue;
+    const edited = editSlideBlockWithoutModel(block.html, instruction, index);
+    if (!edited) continue;
+    replacements.set(index, edited.html);
+    summaries.push(edited.summary);
+  }
+  if (!replacements.size) return undefined;
+  return {
+    html: validatedHtml(replaceSlideBlocks(html, replacements)),
+    summary: summaries.join(" ") || "Updated the requested slide."
+  };
+}
+
+function editSlideBlockWithoutModel(
+  slideHtml: string,
+  instruction: string,
+  index: number
+): { html: string; summary: string } | undefined {
+  const lower = instruction.toLowerCase();
+  let nextHtml = slideHtml;
+  const summaries: string[] = [];
+  const imageUrls = extractImageUrls(instruction);
+
+  if (imageUrls.length && /\bimage\b/.test(lower)) {
+    nextHtml = setSlideImageUrl(nextHtml, imageUrls[0]!, imageAltFromInstruction(instruction, imageUrls[0]!));
+    nextHtml = normalizeReturnedSlideArticle(nextHtml, instruction);
+    summaries.push(`Added the supplied image to slide ${index + 1} with a contained layout.`);
+  }
+
+  if (shouldMakeSingleLine(lower)) {
+    const changed = makeSlideSingleLine(nextHtml);
+    if (changed) {
+      nextHtml = changed;
+      summaries.push(`Redesigned slide ${index + 1} as a single-line slide.`);
+    }
+  } else if (/\b(concise|brief|shorten|simplify|clean)\b/.test(lower)) {
+    const changed = keepFirstBulletOnly(nextHtml);
+    if (changed) {
+      nextHtml = changed;
+      summaries.push(`Made slide ${index + 1} more concise.`);
+    }
+  }
+
+  if (nextHtml === slideHtml || !summaries.length) return undefined;
+  return { html: validatedArticleHtml(nextHtml), summary: summaries.join(" ") };
+}
+
+function shouldMakeSingleLine(lowerInstruction: string): boolean {
+  return (
+    /\b(single|one)\s+(line|sentence|statement)\b/.test(lowerInstruction) ||
+    /\bone\s+line\b/.test(lowerInstruction) ||
+    /\bsingle\s+line\s+alone\b/.test(lowerInstruction) ||
+    (/\bredesign\b/.test(lowerInstruction) && /\b(single|one)\b/.test(lowerInstruction))
+  );
+}
+
+function makeSlideSingleLine(slideHtml: string): string | undefined {
+  const title = plainTextFromHtml(slideHtml.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/i)?.[1] ?? "This slide");
+  const bullets = [...slideHtml.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)]
+    .map((match) => plainTextFromHtml(match[1] ?? ""))
+    .filter(Boolean);
+  const sentence = singleLineSentence(title, bullets);
+  if (!sentence) return undefined;
+
+  let nextHtml = slideHtml.replace(/<ul\b[^>]*class="[^"]*\bbullets\b[^"]*"[^>]*>[\s\S]*?<\/ul>/i, "");
+  if (/<p\b[^>]*class="[^"]*\bsubtitle\b[^"]*"[^>]*>[\s\S]*?<\/p>/i.test(nextHtml)) {
+    nextHtml = nextHtml.replace(
+      /<p\b([^>]*)class="([^"]*\bsubtitle\b[^"]*)"([^>]*)>[\s\S]*?<\/p>/i,
+      `<p$1class="$2 statement"$3>${escapeHtmlInline(sentence)}</p>`
+    );
+  } else {
+    nextHtml = nextHtml.replace(/(<\/h[12]>)/i, `$1\n      <p class="subtitle statement">${escapeHtmlInline(sentence)}</p>`);
+  }
+  return removeVisual(nextHtml);
+}
+
+function removeVisual(slideHtml: string): string {
+  return slideHtml
+    .replace(/\s*<figure\b[^>]*class="[^"]*\bvisual\b[^"]*"[^>]*>[\s\S]*?<\/figure>/i, "")
+    .replace(/\bhas-visual\b/g, "")
+    .replace(/\bvisual-(?:left|right|background|full)\b/g, "")
+    .replace(/class="([^"]*)"/i, (_full, classes: string) => `class="${classes.split(/\s+/).filter(Boolean).join(" ")}"`);
+}
+
+function singleLineSentence(title: string, bullets: string[]): string {
+  const topic = title.replace(/^what\s+is\s+/i, "").replace(/[?!.]+$/g, "").trim() || title;
+  const first = bullets[0] ?? "";
+  const second = bullets[1] ?? "";
+  if (!first) return `${topic} is summarized in one clear statement for the audience.`;
+  const normalizedFirst = first.charAt(0).toLowerCase() + first.slice(1);
+  let sentence = /^is\b/i.test(first) ? `${topic} ${normalizedFirst}` : `${topic} is ${normalizedFirst}`;
+  if (second && sentence.length < 105) {
+    sentence += `, supported by ${second.charAt(0).toLowerCase()}${second.slice(1)}`;
+  }
+  return sentence.replace(/\s+/g, " ").slice(0, 170).replace(/[,:;\s]+$/g, ".");
+}
+
+function setSlideImageUrl(slideHtml: string, imageUrl: string, altText: string): string {
+  const figure = `<figure class="visual visual-contain" style="height: min(46vh, 390px); max-height: 390px; align-self: center;"><img src="${escapeAttributeInline(
+    imageUrl
+  )}" alt="${escapeAttributeInline(altText)}" loading="lazy" style="${containImageStyle()}" /></figure>`;
+  let nextHtml = slideHtml.replace(/\s*<figure\b[^>]*class="[^"]*\bvisual\b[^"]*"[^>]*>[\s\S]*?<\/figure>/i, "");
+  nextHtml = nextHtml.replace(/<\/article>\s*$/i, `${figure}\n</article>`);
+  return nextHtml;
+}
+
+function imageAltFromInstruction(instruction: string, imageUrl: string): string {
+  const title = instruction.match(/(?:image|photo|logo)\s+(?:of|for)\s+([a-z0-9 .'-]{3,60})/i)?.[1]?.trim();
+  if (title) return title;
+  return imageUrl.split(/[/?#]/).filter(Boolean).pop()?.replace(/[-_]+/g, " ").replace(/\.[a-z0-9]+$/i, "") || "Slide image";
+}
+
+function plainTextFromHtml(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeHtmlInline(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function escapeAttributeInline(value: string): string {
+  return escapeHtmlInline(value).replace(/"/g, "&quot;");
 }
 
 function inferSlideIndex(html: string, instruction: string): number | undefined {
