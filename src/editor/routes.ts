@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+﻿import fs from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import type { Application, Request, Response } from "express";
@@ -6,7 +6,7 @@ import express from "express";
 import type { WebClient } from "@slack/web-api";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
-import { NvidiaClient } from "../services/nvidia.js";
+import { extractJson, NvidiaClient } from "../services/nvidia.js";
 import type { DeckPlan, DeckRequest } from "../types.js";
 import { readJsonFile } from "../storage/files.js";
 import { renderEditorPage } from "./page.js";
@@ -81,7 +81,7 @@ export function mountEditorRoutes(app: Application, slackClient: WebClient, nvid
       const html = validatedHtml(req.body?.html);
       const instruction = String(req.body?.instruction ?? "").trim().slice(0, 4_000);
       if (!instruction) throw new EditorInputError("Add an editing instruction.");
-      const result = await editDeckHtml(nvidia, html, instruction);
+      const result = (await applyFastHtmlEdit(html, instruction)) ?? (await editDeckHtml(nvidia, html, instruction));
       res.json(result);
     } catch (error) {
       sendEditorError(res, error);
@@ -151,6 +151,12 @@ async function editDeckHtml(
   html: string,
   instruction: string
 ): Promise<{ html: string; summary: string }> {
+  const slideBlocks = extractSlideBlocks(html);
+  const targetIndexes = inferTargetSlideIndexes(html, instruction);
+  if (slideBlocks.length && targetIndexes.length) {
+    return editTargetedSlides(nvidia, html, instruction, targetIndexes);
+  }
+
   const output = await nvidia.chatText(
     [
       {
@@ -172,6 +178,299 @@ Do not wrap the result in Markdown fences.`
   );
   const updated = validatedHtml(extractHtml(output));
   return { html: updated, summary: "The requested change is ready in the preview." };
+}
+
+async function editTargetedSlides(
+  nvidia: NvidiaClient,
+  html: string,
+  instruction: string,
+  targetIndexes: number[]
+): Promise<{ html: string; summary: string }> {
+  const slideBlocks = extractSlideBlocks(html);
+  const targetSlides = targetIndexes
+    .map((index) => slideBlocks[index])
+    .filter((slide): slide is SlideBlock => Boolean(slide));
+  if (!targetSlides.length) throw new EditorInputError("I could not find the requested slide.");
+
+  const slidePayload = targetSlides
+    .map((slide) => `SLIDE ${slide.index + 1}\n${slide.html}`)
+    .join("\n\n---\n\n");
+  const output = await nvidia.chatText(
+    [
+      {
+        role: "system",
+        content: `You are the PioltPPT slide editor. Edit only the supplied slide article blocks.
+Return strict JSON only:
+{"slides":[{"slideNumber":2,"html":"<article class=\\"slide ...\\">...</article>"}],"summary":"short user-facing summary"}
+Rules:
+- Return complete <article> blocks only, not full HTML documents.
+- Preserve slide class names, data attributes, keyboard/nav mechanics, and existing visual CSS class conventions.
+- Do not include <html>, <head>, <body>, <style>, or <script>.
+- Keep content concise, professional, and presentation-ready.
+- If adding an image URL supplied by the user, use <figure class="visual"><img src="URL" alt="descriptive alt" loading="lazy" /></figure> and add has-visual plus the requested visual-left, visual-right, visual-background, or visual-full class to the article.
+- Never invent image URLs.`
+      },
+      {
+        role: "user",
+        content: `Editing instruction:\n${instruction}\n\nCurrent slide blocks:\n${slidePayload}`
+      }
+    ],
+    { model: config.NVIDIA_MODEL_FAST, temperature: 0.12, maxTokens: 6_000 }
+  );
+  const patch = parseSlidePatch(output);
+  const replacements = new Map<number, string>();
+  for (const item of patch.slides) {
+    const index = item.slideNumber - 1;
+    if (!targetIndexes.includes(index)) continue;
+    replacements.set(index, validatedArticleHtml(item.html));
+  }
+  if (!replacements.size) {
+    throw new EditorInputError("The AI response did not include an updated slide block.");
+  }
+  return {
+    html: validatedHtml(replaceSlideBlocks(html, replacements)),
+    summary: patch.summary || `Updated slide ${targetSlides.map((slide) => slide.index + 1).join(", ")}.`
+  };
+}
+
+async function applyFastHtmlEdit(html: string, instruction: string): Promise<{ html: string; summary: string } | undefined> {
+  const index = inferSlideIndex(html, instruction);
+  if (index === undefined) return undefined;
+
+  let nextHtml = html;
+  const summaries: string[] = [];
+  const lower = instruction.toLowerCase();
+  const imageUrls = extractImageUrls(instruction);
+  const placement = inferImagePlacement(lower);
+
+  if (imageUrls.length) {
+    const changed = updateSlide(nextHtml, index, setSlideImage(imageUrls[0]!, placement));
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Added image to slide ${index + 1}.`);
+  }
+
+  if (!imageUrls.length && /\bimage\b/.test(lower) && /\bright\b/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, moveSlideImage("right"));
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Moved slide ${index + 1} image to the right.`);
+  } else if (!imageUrls.length && /\bimage\b/.test(lower) && /\bleft\b/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, moveSlideImage("left"));
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Moved slide ${index + 1} image to the left.`);
+  } else if (!imageUrls.length && /\bimage\b/.test(lower) && /\bbackground\b/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, moveSlideImage("background"));
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Changed slide ${index + 1} image to background placement.`);
+  } else if (!imageUrls.length && /\bimage\b/.test(lower) && /\bfull\b/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, moveSlideImage("full"));
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Changed slide ${index + 1} image to full-width placement.`);
+  }
+
+  if (/(single|one)\s+(point|bullet)|one\s+single\s+point|single\s+point\s+alone/.test(lower)) {
+    const changed = updateSlide(nextHtml, index, keepFirstBulletOnly);
+    if (!changed) return undefined;
+    nextHtml = changed;
+    summaries.push(`Kept one main point on slide ${index + 1}.`);
+  }
+
+  if (!summaries.length || nextHtml === html) return undefined;
+  return { html: validatedHtml(nextHtml), summary: summaries.join(" ") };
+}
+
+function inferSlideIndex(html: string, instruction: string): number | undefined {
+  const slideNumber = instruction.match(/\bslide\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/i)?.[1];
+  if (slideNumber) {
+    const index = slideNumberToIndex(slideNumber);
+    return Number.isInteger(index) && index >= 0 ? index : undefined;
+  }
+  if (!/\bimage\b/i.test(instruction)) return undefined;
+  const matches = [...html.matchAll(/<article\b[^>]*class="[^"]*\bslide\b[^"]*"[^>]*>[\s\S]*?<\/article>/gi)];
+  const firstVisualIndex = matches.findIndex((match) => /<figure\b[^>]*class="[^"]*\bvisual\b/i.test(match[0]));
+  return firstVisualIndex >= 0 ? firstVisualIndex : undefined;
+}
+
+function updateSlide(html: string, index: number, edit: (slideHtml: string) => string | undefined): string | undefined {
+  const block = extractSlideBlocks(html)[index];
+  if (!block) return undefined;
+  const replacement = edit(block.html);
+  if (!replacement || replacement === block.html) return undefined;
+  return `${html.slice(0, block.start)}${replacement}${html.slice(block.end)}`;
+}
+
+function replaceSlideBlocks(html: string, replacements: Map<number, string>): string {
+  const blocks = extractSlideBlocks(html);
+  let nextHtml = html;
+  for (const [index, replacement] of [...replacements.entries()].sort((a, b) => b[0] - a[0])) {
+    const block = blocks[index];
+    if (block) {
+      nextHtml = `${nextHtml.slice(0, block.start)}${replacement}${nextHtml.slice(block.end)}`;
+    }
+  }
+  return nextHtml;
+}
+
+interface SlideBlock {
+  index: number;
+  start: number;
+  end: number;
+  html: string;
+}
+
+function extractSlideBlocks(html: string): SlideBlock[] {
+  return [...html.matchAll(/<article\b[^>]*class="[^"]*\bslide\b[^"]*"[^>]*>[\s\S]*?<\/article>/gi)].map(
+    (match, index) => ({
+      index,
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+      html: match[0]
+    })
+  );
+}
+
+function moveSlideImage(placement: "right" | "left" | "background" | "full"): (slideHtml: string) => string | undefined {
+  return (slideHtml) => {
+    if (!/<figure\b[^>]*class="[^"]*\bvisual\b/i.test(slideHtml)) return undefined;
+    const visualClass = placement === "right" ? "visual-right" : `visual-${placement}`;
+    return slideHtml.replace(/<article\b([^>]*)class="([^"]*)"([^>]*)>/i, (_full, before, classValue: string, after) => {
+      const classes = classValue
+        .split(/\s+/)
+        .filter((name) => name && !["visual-left", "visual-right", "visual-background", "visual-full"].includes(name));
+      if (!classes.includes("has-visual")) classes.push("has-visual");
+      classes.push(visualClass);
+      return `<article${before}class="${classes.join(" ")}"${after}>`;
+    });
+  };
+}
+
+function setSlideImage(url: string, placement: "right" | "left" | "background" | "full"): (slideHtml: string) => string {
+  return (slideHtml) => {
+    const cleaned = cleanInlineUrl(url);
+    const withoutExistingVisual = slideHtml.replace(/\s*<figure\b[^>]*class="[^"]*\bvisual\b[^"]*"[^>]*>[\s\S]*?<\/figure>/i, "");
+    const visualClass = placement === "right" ? "visual-right" : `visual-${placement}`;
+    const articleWithClasses = withoutExistingVisual.replace(
+      /<article\b([^>]*)class="([^"]*)"([^>]*)>/i,
+      (_full, before, classValue: string, after) => {
+        const classes = classValue
+          .split(/\s+/)
+          .filter((name) => name && !["visual-left", "visual-right", "visual-background", "visual-full"].includes(name));
+        if (!classes.includes("has-visual")) classes.push("has-visual");
+        classes.push(visualClass);
+        return `<article${before}class="${classes.join(" ")}"${after}>`;
+      }
+    );
+    const visual = `\n    <figure class="visual"><img src="${escapeAttribute(cleaned)}" alt="Slide visual" loading="lazy" /></figure>`;
+    return articleWithClasses.replace(/\s*<\/article>\s*$/i, `${visual}\n  </article>`);
+  };
+}
+
+function inferTargetSlideIndexes(html: string, instruction: string): number[] {
+  const blocks = extractSlideBlocks(html);
+  const indexes = new Set<number>();
+  const slidePhrase = /\bslides?\s+((?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s*(?:,|and|&|to|-)\s*)?)+)/gi;
+  for (const match of instruction.matchAll(slidePhrase)) {
+    const phrase = match[1] ?? "";
+    const values = [...phrase.matchAll(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/gi)]
+      .map((value) => slideNumberToIndex(value[1] ?? ""));
+    for (const value of values) {
+      if (value >= 0 && value < blocks.length) indexes.add(value);
+    }
+  }
+  if (!indexes.size && /\ball\s+slides\b/i.test(instruction)) {
+    blocks.forEach((block) => indexes.add(block.index));
+  }
+  return [...indexes].sort((a, b) => a - b);
+}
+
+function keepFirstBulletOnly(slideHtml: string): string | undefined {
+  const list = slideHtml.match(/<ul\b[^>]*class="[^"]*\bbullets\b[^"]*"[^>]*>([\s\S]*?)<\/ul>/i);
+  const listMarkup = list?.[0];
+  const listInner = list?.[1];
+  if (!listMarkup || !listInner) return undefined;
+  const firstBullet = listInner.match(/<li\b[^>]*>[\s\S]*?<\/li>/i)?.[0];
+  if (!firstBullet) return undefined;
+  const nextList = listMarkup.replace(listInner, firstBullet);
+  return slideHtml.replace(listMarkup, nextList);
+}
+
+interface SlidePatch {
+  slides: { slideNumber: number; html: string }[];
+  summary?: string;
+}
+
+function parseSlidePatch(output: string): SlidePatch {
+  const parsed = JSON.parse(extractJson(output)) as Partial<SlidePatch>;
+  if (!Array.isArray(parsed.slides)) {
+    throw new EditorInputError("The AI response did not contain slide updates.");
+  }
+  return {
+    slides: parsed.slides
+      .map((slide) => ({
+        slideNumber: Number(slide.slideNumber),
+        html: String(slide.html ?? "")
+      }))
+      .filter((slide) => Number.isInteger(slide.slideNumber) && slide.slideNumber > 0 && slide.html),
+    summary: typeof parsed.summary === "string" ? parsed.summary : undefined
+  };
+}
+
+function validatedArticleHtml(value: string): string {
+  const html = value.trim();
+  if (!/^<article\b/i.test(html) || !/<\/article>$/i.test(html) || !/\bclass="[^"]*\bslide\b/i.test(html)) {
+    throw new EditorInputError("The AI response must return complete slide article blocks.");
+  }
+  if (/<(?:html|head|body|style|script)\b/i.test(html)) {
+    throw new EditorInputError("The AI response included unsupported document-level markup.");
+  }
+  return html;
+}
+
+function extractImageUrls(value: string): string[] {
+  return [...value.matchAll(/https?:\/\/[^\s"'<>]+/gi)].map((match) => cleanInlineUrl(match[0]));
+}
+
+function inferImagePlacement(value: string): "right" | "left" | "background" | "full" {
+  if (/\bleft\b/.test(value)) return "left";
+  if (/\bbackground\b/.test(value)) return "background";
+  if (/\bfull\b|full-?width/.test(value)) return "full";
+  return "right";
+}
+
+function slideNumberToIndex(value: string): number {
+  const normalized = value.toLowerCase();
+  const words: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12
+  };
+  const slideNumber = words[normalized] ?? Number(normalized);
+  return Number.isFinite(slideNumber) ? slideNumber - 1 : -1;
+}
+
+function cleanInlineUrl(value: string): string {
+  return value.trim().replace(/[),.;]+$/g, "");
+}
+
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 async function notifySlack(client: WebClient, manifest: DeckManifest, title: string): Promise<boolean> {

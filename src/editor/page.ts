@@ -17,15 +17,22 @@ export function renderEditorPage(deckId: string): string {
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     button.primary:hover { background: #066c4d; color: #fff; }
     button:disabled { cursor: wait; opacity: .6; }
-    .app { height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    .app { --preview-pane: 57%; --navigator-pane: 230px; height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr); }
     header { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 58px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
     .identity { min-width: 0; display: flex; align-items: baseline; gap: 14px; }
     .brand { font-weight: 850; font-size: 18px; white-space: nowrap; }
     .deck-id { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .status { min-width: 92px; color: var(--muted); font-size: 13px; text-align: right; }
-    main { min-height: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(520px, .95fr); }
+    main { min-height: 0; display: grid; grid-template-columns: minmax(360px, var(--preview-pane)) 8px minmax(420px, 1fr); }
     .preview { min-width: 0; min-height: 0; padding: 14px; border-right: 1px solid var(--line); }
+    .splitter { min-width: 8px; min-height: 8px; background: #cdd5d1; position: relative; z-index: 6; touch-action: none; }
+    .splitter:hover, .splitter.dragging { background: var(--accent); }
+    .splitter.vertical { cursor: col-resize; }
+    .splitter.horizontal { cursor: row-resize; display: none; }
+    .splitter::after { content: ""; position: absolute; inset: 0; margin: auto; background: rgba(255,255,255,.75); }
+    .splitter.vertical::after { width: 2px; height: 42px; }
+    .splitter.horizontal::after { width: 42px; height: 2px; }
     iframe { width: 100%; height: 100%; border: 1px solid var(--line); background: #fff; }
     .workspace { min-width: 0; min-height: 0; display: grid; grid-template-rows: 46px minmax(0, 1fr); background: var(--panel); }
     .tabs { display: flex; align-items: end; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--line); }
@@ -33,7 +40,7 @@ export function renderEditorPage(deckId: string): string {
     .tab.active { border-bottom-color: var(--accent); color: var(--accent); }
     .pane { min-height: 0; display: none; }
     .pane.active { display: grid; }
-    #codePane { grid-template-columns: minmax(0, 1fr) 230px; grid-template-rows: minmax(0, 1fr) 34px; background: var(--code); }
+    #codePane { grid-template-columns: minmax(240px, 1fr) 8px minmax(170px, var(--navigator-pane)); grid-template-rows: minmax(0, 1fr) 34px; background: var(--code); }
     .code-wrap { min-width: 0; min-height: 0; position: relative; }
     #code { width: 100%; height: 100%; resize: none; border: 0; outline: 0; padding: 18px; background: var(--code); color: var(--code-ink); font: 13px/1.55 "Cascadia Code", Consolas, monospace; tab-size: 2; white-space: pre; overflow: auto; }
     #code::selection { background: rgba(217, 119, 6, .45); }
@@ -59,8 +66,10 @@ export function renderEditorPage(deckId: string): string {
       body { overflow: auto; }
       .app { min-height: 100vh; height: auto; grid-template-rows: auto auto; }
       header { flex-wrap: wrap; padding: 10px 12px; }
-      main { grid-template-columns: 1fr; grid-template-rows: 50vh 76vh; }
+      main { grid-template-columns: 1fr; grid-template-rows: 50vh 8px 76vh; }
       .preview { border-right: 0; border-bottom: 1px solid var(--line); padding: 8px; }
+      .splitter.vertical { cursor: row-resize; }
+      .splitter.vertical::after { width: 42px; height: 2px; }
       .workspace { min-height: 76vh; }
       .status { display: none; }
     }
@@ -68,8 +77,10 @@ export function renderEditorPage(deckId: string): string {
       .identity { width: 100%; }
       .actions { width: 100%; justify-content: stretch; }
       .actions > * { flex: 1 1 auto; }
-      #codePane { grid-template-columns: 1fr; grid-template-rows: 42% minmax(0, 1fr) 34px; }
+      #codePane { grid-template-columns: 1fr; grid-template-rows: 42% 8px minmax(0, 1fr) 34px; }
       .navigator { border-left: 0; border-top: 1px solid #303735; }
+      #codePane .splitter { cursor: row-resize; }
+      #codePane .splitter::after { width: 42px; height: 2px; }
       .prompt-row { grid-template-columns: 1fr; }
     }
   </style>
@@ -82,10 +93,12 @@ export function renderEditorPage(deckId: string): string {
     </header>
     <main>
       <section class="preview"><iframe id="preview" title="Deck preview" sandbox="allow-scripts allow-popups"></iframe></section>
+      <div class="splitter vertical" id="mainSplitter" role="separator" aria-label="Resize preview and editor panes"></div>
       <section class="workspace">
         <div class="tabs"><button class="tab active" data-pane="codePane">HTML</button><button class="tab" data-pane="chatPane">AI assistant</button></div>
         <div class="pane active" id="codePane">
           <div class="code-wrap"><textarea id="code" spellcheck="false" aria-label="Deck HTML source"></textarea></div>
+          <div class="splitter vertical" id="navSplitter" role="separator" aria-label="Resize source and navigator panes"></div>
           <aside class="navigator" aria-label="Source navigator">
             <div class="nav-group"><h3>Headings</h3><div id="headingNav"></div></div>
             <div class="nav-group"><h3>Paragraphs</h3><div id="paragraphNav"></div></div>
@@ -126,7 +139,8 @@ export function renderEditorPage(deckId: string): string {
     }
     async function api(path, options = {}) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 18000);
+      const timeoutMs = path === '/ai' ? 120000 : 18000;
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const response = await fetch('/api/editor/' + encodeURIComponent(deckId) + path + tokenQuery(), {
           ...options,
@@ -137,7 +151,7 @@ export function renderEditorPage(deckId: string): string {
         if (!response.ok) throw new Error(data.error || 'Request failed');
         return data;
       } catch (error) {
-        if (error.name === 'AbortError') throw new Error('The editor API did not respond. Restart npm run dev and keep ngrok pointed at the same port.');
+        if (error.name === 'AbortError') throw new Error(path === '/ai' ? 'The AI edit is taking too long. Try a smaller slide-specific prompt.' : 'The editor API did not respond. Restart npm run dev and keep ngrok pointed at the same port.');
         throw error;
       } finally {
         clearTimeout(timeout);
@@ -226,6 +240,49 @@ export function renderEditorPage(deckId: string): string {
       document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === tab));
       document.querySelectorAll('.pane').forEach((pane) => pane.classList.toggle('active', pane.id === tab.dataset.pane));
     }));
+    function makeSplitter(splitter, onMove) {
+      let dragging = false;
+      splitter.addEventListener('pointerdown', (event) => {
+        dragging = true;
+        splitter.classList.add('dragging');
+        splitter.setPointerCapture(event.pointerId);
+        event.preventDefault();
+      });
+      splitter.addEventListener('pointermove', (event) => {
+        if (!dragging) return;
+        onMove(event);
+      });
+      function stop() {
+        dragging = false;
+        splitter.classList.remove('dragging');
+      }
+      splitter.addEventListener('pointerup', stop);
+      splitter.addEventListener('pointercancel', stop);
+    }
+    makeSplitter(document.getElementById('mainSplitter'), (event) => {
+      const isStacked = matchMedia('(max-width: 1050px)').matches;
+      const app = document.querySelector('.app');
+      const rect = document.querySelector('main').getBoundingClientRect();
+      if (isStacked) {
+        const percent = Math.min(72, Math.max(28, ((event.clientY - rect.top) / rect.height) * 100));
+        document.querySelector('main').style.gridTemplateRows = percent + 'vh 8px ' + Math.max(56, 118 - percent) + 'vh';
+      } else {
+        const percent = Math.min(74, Math.max(32, ((event.clientX - rect.left) / rect.width) * 100));
+        app.style.setProperty('--preview-pane', percent + '%');
+      }
+    });
+    makeSplitter(document.getElementById('navSplitter'), (event) => {
+      const isStacked = matchMedia('(max-width: 680px)').matches;
+      const pane = document.getElementById('codePane');
+      const rect = pane.getBoundingClientRect();
+      if (isStacked) {
+        const percent = Math.min(68, Math.max(26, ((event.clientY - rect.top) / rect.height) * 100));
+        pane.style.gridTemplateRows = percent + '% 8px minmax(0, 1fr) 34px';
+      } else {
+        const width = Math.min(420, Math.max(170, rect.right - event.clientX));
+        document.querySelector('.app').style.setProperty('--navigator-pane', width + 'px');
+      }
+    });
     document.getElementById('save').addEventListener('click', async () => {
       setStatus('Saving');
       try { await api('/save', { method: 'POST', body: JSON.stringify({ html: code.value }) }); setStatus('Draft saved'); }
