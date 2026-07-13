@@ -9,6 +9,7 @@ import { redactSensitiveText, truncateForPrompt } from "../safety.js";
 import { readJsonFile } from "../storage/files.js";
 import { searchSlackContext } from "../services/slackSearch.js";
 import { searchWeb } from "../services/tavily.js";
+import { analyzeDataFiles, createDataDeckPlan } from "../services/dataAnalysis.js";
 import { NvidiaClient } from "../services/nvidia.js";
 import type {
   DeckAsset,
@@ -26,7 +27,7 @@ import type {
 const SlidePlanSchema = z.object({
   title: z.string().min(1),
   subtitle: z.string().optional(),
-  layout: z.enum(["title", "section", "image", "bullets", "quote", "comparison", "timeline", "closing"]),
+  layout: z.enum(["title", "section", "image", "bullets", "quote", "comparison", "timeline", "chart", "closing"]),
   bullets: z.array(z.string()).min(0).max(6),
   visualPrompt: z.string().optional(),
   imageQuery: z.string().optional(),
@@ -57,6 +58,7 @@ interface GenerateOptions {
   botToken?: string;
   userToken?: string;
   actionToken?: string;
+  allowConfiguredUserToken?: boolean;
 }
 
 interface AdvancedControls {
@@ -81,15 +83,20 @@ export class DeckAgent {
     const webPromise: Promise<ResearchSource[]> = safeRequest.useWebResearch ? searchWeb(topic, 7) : Promise.resolve([]);
     const slackPromise: Promise<SlackContextSearchResult> = safeRequest.useSlackContext
       ? searchSlackContext({
-          query: topic,
+          query: safeRequest.slackResearch?.query || topic,
           botToken: options.botToken,
           userToken: options.userToken,
           actionToken: options.actionToken,
-          contextChannelId: safeRequest.channelId
+          contextChannelId: safeRequest.channelId,
+          fromDate: safeRequest.slackResearch?.fromDate,
+          toDate: safeRequest.slackResearch?.toDate,
+          person: safeRequest.slackResearch?.person,
+          allowConfiguredUserToken: options.allowConfiguredUserToken
       })
       : Promise.resolve({ sources: [], text: "" });
 
-    const [webSources, slackContext] = await Promise.all([webPromise, slackPromise]);
+    const dataPromise = safeRequest.dataFiles?.length ? analyzeDataFiles(safeRequest.dataFiles) : Promise.resolve(undefined);
+    const [webSources, slackContext, dataAnalysis] = await Promise.all([webPromise, slackPromise, dataPromise]);
     const assets = controls.assets;
 
     if (slackContext.unavailableReason) {
@@ -99,10 +106,13 @@ export class DeckAgent {
     const sources = dedupeSources([
       ...webSources,
       ...slackContext.sources,
+      ...(dataAnalysis?.sources ?? []),
       ...parseUserSources(safeRequest.customContext, safeRequest.assetLinks)
     ]);
 
-    const plan = await this.createPlan(requestWithControls, sources, assets, slackContext.text);
+    const plan = dataAnalysis
+      ? normalizePlan(createDataDeckPlan(requestWithControls, dataAnalysis), requestWithControls, sources)
+      : await this.createPlan(requestWithControls, sources, assets, slackContext.text);
     const deckId = `${Date.now()}-${nanoid(8)}`;
     const localDir = path.join(config.decksDir, deckId);
     const publicUrl = `${config.PUBLIC_BASE_URL.replace(/\/$/, "")}/decks/${deckId}/`;
@@ -354,7 +364,11 @@ function sanitizeRequest(request: DeckRequest): DeckRequest {
     assetLinks: request.assetLinks ? redactSensitiveText(request.assetLinks) : undefined,
     advancedPrompt: request.advancedPrompt ? redactSensitiveText(request.advancedPrompt) : undefined,
     transition: request.transition,
-    slideTransitions: request.slideTransitions
+    slideTransitions: request.slideTransitions,
+    dataFiles: request.dataFiles?.map((file) => ({ ...file, name: path.basename(file.name) })),
+    templateFileId: request.templateFileId,
+    templateKind: request.templateKind,
+    slackResearch: request.slackResearch
   };
 }
 
@@ -400,13 +414,7 @@ export function parseAdvancedControls(request: DeckRequest): AdvancedControls {
     }
   }
 
-  for (const match of text.matchAll(/slide\s*(\d+)\s*:\s*image(?:\s+(left|right|background|full))?(?!\s+https?:\/\/)(?=\s*(?:[|\n]|$))/gi)) {
-    const slideIndex = Number(match[1]) - 1;
-    const placement = normalizeImagePlacement(match[2]);
-    if (slideIndex >= 0 && !disabledSlides.has(slideIndex) && !assets.some((asset) => asset.slideIndex === slideIndex)) {
-      assets.push(sampleImageAsset(slideIndex, placement));
-    }
-  }
+
 
   return {
     assets,
@@ -461,18 +469,7 @@ function userImageAsset(url: string, slideIndex: number, placement: ImagePlaceme
   };
 }
 
-function sampleImageAsset(slideIndex: number, placement: ImagePlacement): DeckAsset {
-  return {
-    title: `Editable sample image for slide ${slideIndex + 1}`,
-    url: "/assets/pioltppt-open-image.svg",
-    thumbnailUrl: "/assets/pioltppt-open-image.svg",
-    creator: "PioltPPT",
-    license: "MIT",
-    source: "editable sample",
-    slideIndex,
-    placement
-  };
-}
+
 
 function cleanUrl(value?: string): string | undefined {
   const cleaned = value?.trim().replace(/[)>.,;]+$/g, "");
@@ -494,12 +491,30 @@ function normalizePlan(plan: DeckPlan, request: DeckRequest, sources: ResearchSo
     });
   }
 
-  return {
+  return ensureThankYouSlide({
     ...plan,
     title: plan.title || request.title || request.topic,
     presenters: plan.presenters.length ? plan.presenters : request.presenters,
     slides,
     sources: dedupeSources([...plan.sources, ...sources]).slice(0, 20)
+  });
+}
+
+function ensureThankYouSlide(plan: DeckPlan): DeckPlan {
+  const existing = plan.slides.at(-1);
+  if (existing && /^thank\s*you/i.test(existing.title)) return plan;
+  return {
+    ...plan,
+    slides: [
+      ...plan.slides,
+      {
+        title: "Thank You",
+        subtitle: "Questions, discussion, and next steps",
+        layout: "closing",
+        bullets: [],
+        speakerNotes: "Invite questions and close the presentation."
+      }
+    ]
   };
 }
 
@@ -516,7 +531,7 @@ export function createFallbackPlan(request: DeckRequest, sources: ResearchSource
     middleSlides.push(supplemental[middleSlides.length % supplemental.length]!);
   }
 
-  return {
+  return ensureThankYouSlide({
     title,
     subtitle: fallbackSubtitle(topic, request),
     presenters: request.presenters,
@@ -543,7 +558,7 @@ export function createFallbackPlan(request: DeckRequest, sources: ResearchSource
       "Paste department, placement, facility, or event notes for a richer second pass.",
       "Ask PioltPPT to revise the deck after adding real source material."
     ]
-  };
+  });
 }
 
 function fallbackSlidesForTopic(topic: string, sourceNote: string, sources: ResearchSource[]): SlidePlan[] {

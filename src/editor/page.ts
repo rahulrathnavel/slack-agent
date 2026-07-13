@@ -16,7 +16,7 @@ export function renderEditorPage(deckId: string): string {
     button:hover, .button-link:hover { border-color: var(--accent); color: var(--accent); }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     button.primary:hover { background: #066c4d; color: #fff; }
-    button:disabled { cursor: wait; opacity: .6; }
+    button:disabled { cursor: not-allowed; opacity: .45; border-color: var(--line); color: var(--muted); }
     .app { --preview-pane: 57%; --navigator-pane: 230px; height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr); }
     header { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 58px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
     .identity { min-width: 0; display: flex; align-items: baseline; gap: 14px; }
@@ -105,7 +105,7 @@ export function renderEditorPage(deckId: string): string {
   <div class="app">
     <header>
       <div class="identity"><span class="brand">Deck Playground</span><span class="deck-id">${safeDeckId}</span></div>
-      <div class="actions"><span class="status" id="status">Loading</span><a class="button-link" id="openDeck" target="_blank" rel="noopener">Open deck</a><button id="save">Save draft</button><button class="primary" id="publish">Finish editing</button></div>
+      <div class="actions"><span class="status" id="status">Loading</span><a class="button-link" id="openDeck" target="_blank" rel="noopener">Open deck</a><button id="printPdf" type="button">PDF</button><button id="exportPptx" type="button">PPTX</button><button id="save">Save draft</button><button class="primary" id="publish">Finish editing</button></div>
     </header>
     <main>
       <section class="preview"><iframe id="preview" title="Deck preview" sandbox="allow-scripts allow-popups"></iframe></section>
@@ -122,8 +122,8 @@ export function renderEditorPage(deckId: string): string {
           </aside>
           <div class="code-meta"><span>index.html</span><span id="size"></span></div>
         </div>
-        <div class="pane" id="chatPane"><div class="messages" id="messages"></div><div class="composer"><div class="chat-tools"><span>Slide</span><input id="imageSlide" type="number" min="1" value="2" aria-label="Image slide number" /><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" hidden /><button id="uploadImage">Upload image</button></div><div class="prompt-row"><textarea id="instruction" placeholder="Examples: turn slide 2 bullets into one paragraph, redesign slide 3 as a clean executive slide, or add an image URL to slide 2."></textarea><button class="primary" id="apply">Apply</button></div></div></div>
-        <div class="pane" id="designPane"><div class="toolbox"><h2>Slide design</h2><p>Change one slide directly. These controls update the HTML source and preview immediately.</p><label class="field">Slide number<input id="designSlide" type="number" min="1" value="1" /></label><label class="field">Font family<select id="designFont"><option value="Inter, ui-sans-serif, system-ui, sans-serif">Sans serif</option><option value="Georgia, serif">Serif</option><option value="Arial, sans-serif">Arial</option><option value="Trebuchet MS, sans-serif">Trebuchet</option></select></label><label class="field">Text size (px)<input id="designSize" type="number" min="16" max="80" value="28" /></label><label class="field">Text color<input id="designTextColor" type="color" value="#17201d" /></label><label class="field">Slide background<input id="designBackground" type="color" value="#f4f6f3" /></label><label class="field">Transition<select id="designTransition"><option value="fade">Fade</option><option value="slide">Slide</option><option value="zoom">Zoom</option><option value="none">None</option></select></label><label class="field" style="grid-column: 1 / -1;">Image URL<input id="designImageUrl" type="url" placeholder="https://example.com/image.jpg" /></label><label class="field">Image position<select id="designImagePlacement"><option value="right">Right</option><option value="left">Left</option><option value="full">Full width</option><option value="background">Background</option></select></label><div class="tool-actions"><button id="clearImage" type="button">Remove image</button><button class="primary" id="applyDesign" type="button">Apply design</button></div></div></div>
+        <div class="pane" id="chatPane"><div class="messages" id="messages"></div><div class="composer"><div class="chat-tools"><span>Selected slide</span><input id="imageSlide" type="number" min="1" value="2" aria-label="Selected slide number" /><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" hidden /><button id="uploadImage">Upload image</button></div><div class="prompt-row"><textarea id="instruction" placeholder="Examples: turn the selected slide into one paragraph, redesign slide 3 as a clean executive slide, or add an image URL to slide 2."></textarea><button class="primary" id="apply">Apply</button></div></div></div>
+        <div class="pane" id="designPane"><div class="toolbox"><h2>Slide design</h2><p>Change one slide directly. These controls update the HTML source and preview immediately.</p><label class="field">Slide number<input id="designSlide" type="number" min="1" value="1" /></label><label class="field">Font family<select id="designFont"><option value="Inter, ui-sans-serif, system-ui, sans-serif">Sans serif</option><option value="Georgia, serif">Serif</option><option value="Arial, sans-serif">Arial</option><option value="Trebuchet MS, sans-serif">Trebuchet</option></select></label><label class="field">Text size (px)<input id="designSize" type="number" min="16" max="80" value="28" /></label><label class="field">Text color<input id="designTextColor" type="color" value="#17201d" /></label><label class="field">Slide background<input id="designBackground" type="color" value="#f4f6f3" /></label><label class="field">Transition<select id="designTransition"><option value="fade">Fade</option><option value="slide">Slide</option><option value="zoom">Zoom</option><option value="none">None</option></select></label><label class="field" style="grid-column: 1 / -1;">Image URL<input id="designImageUrl" type="url" placeholder="https://example.com/image.jpg" /></label><label class="field" style="grid-column: 1 / -1;">Image alt text<input id="designImageAlt" type="text" placeholder="Describe the image for accessibility" /></label><label class="field">Image position<select id="designImagePlacement"><option value="right">Right</option><option value="left">Left</option><option value="full">Full width</option><option value="background">Background</option></select></label><div class="tool-actions"><button id="clearImage" type="button">Remove image</button><button class="primary" id="applyDesign" type="button">Apply design</button></div></div></div>
       </section>
     </main>
   </div>
@@ -151,6 +151,7 @@ export function renderEditorPage(deckId: string): string {
       preview.srcdoc = code.value;
       size.textContent = Math.max(1, Math.round(new Blob([code.value]).size / 1024)) + ' KB';
       rebuildNavigator();
+      updateImageControlState();
     }
     function addMessage(role, text) {
       const node = document.createElement('div');
@@ -185,6 +186,7 @@ export function renderEditorPage(deckId: string): string {
       code.value = source.html;
       document.getElementById('openDeck').href = source.publicUrl || '/decks/' + encodeURIComponent(deckId) + '/';
       refresh();
+      loadSelectedSlideControls();
       setStatus(source.isDraft ? 'Draft loaded' : 'Ready');
     }
     function plainText(value) {
@@ -252,6 +254,11 @@ export function renderEditorPage(deckId: string): string {
       for (const match of html.matchAll(/<img\\b[^>]*\\bsrc=["']([^"']+)["'][^>]*>/gi)) {
         const start = (match.index || 0) + match[0].indexOf(match[1]);
         addNavButton(imageNav, match[1].slice(0, 86), 'image URL', start, start + match[1].length, match[1], 'url');
+        const altMatch = match[0].match(/\\balt=["']([^"']*)["']/i);
+        if (altMatch) {
+          const altStart = (match.index || 0) + match[0].indexOf(altMatch[1]);
+          addNavButton(imageNav, altMatch[1] || 'Missing alt text', 'image alt text', altStart, altStart + altMatch[1].length, altMatch[1], 'text');
+        }
       }
       if (!headingNav.children.length) headingNav.textContent = 'No headings found.';
       if (!paragraphNav.children.length) paragraphNav.textContent = 'No paragraph text found.';
@@ -303,6 +310,34 @@ export function renderEditorPage(deckId: string): string {
       if (!slide) throw new Error('That slide number does not exist.');
       return { slide, slideNumber };
     }
+    function selectedSlideHasImage() {
+      try {
+        const documentCopy = new DOMParser().parseFromString(code.value, 'text/html');
+        return Boolean(selectedSlide(documentCopy).slide.querySelector('.visual:not(.chart-visual) img'));
+      } catch (_error) {
+        return false;
+      }
+    }
+    function loadSelectedSlideControls() {
+      try {
+        const documentCopy = new DOMParser().parseFromString(code.value, 'text/html');
+        const { slide } = selectedSlide(documentCopy);
+        const image = slide.querySelector('.visual:not(.chart-visual) img');
+        document.getElementById('designImageUrl').value = image?.getAttribute('src') || '';
+        document.getElementById('designImageAlt').value = image?.getAttribute('alt') || '';
+        document.getElementById('designImagePlacement').value = slide.classList.contains('visual-left') ? 'left' : slide.classList.contains('visual-full') ? 'full' : slide.classList.contains('visual-background') ? 'background' : 'right';
+      } catch (_error) {
+        document.getElementById('designImageUrl').value = '';
+        document.getElementById('designImageAlt').value = '';
+      }
+      updateImageControlState();
+    }
+    function updateImageControlState() {
+      const clearButton = document.getElementById('clearImage');
+      const hasImage = selectedSlideHasImage();
+      clearButton.disabled = !hasImage;
+      clearButton.title = hasImage ? 'Remove the image from this slide' : 'This slide has no image to remove';
+    }
     function applyDesign() {
       const documentCopy = new DOMParser().parseFromString(code.value, 'text/html');
       const { slide, slideNumber } = selectedSlide(documentCopy);
@@ -312,6 +347,7 @@ export function renderEditorPage(deckId: string): string {
       const background = document.getElementById('designBackground').value;
       const transition = document.getElementById('designTransition').value;
       const imageUrl = document.getElementById('designImageUrl').value.trim();
+      const imageAlt = document.getElementById('designImageAlt').value.trim() || ('Slide ' + slideNumber + ' image');
       const placement = document.getElementById('designImagePlacement').value;
       slide.style.background = background;
       const content = slide.querySelector('.content');
@@ -324,7 +360,7 @@ export function renderEditorPage(deckId: string): string {
       slide.querySelectorAll('h1, h2').forEach((node) => { node.style.fontFamily = font; });
       slide.classList.remove('transition-fade', 'transition-slide', 'transition-zoom', 'transition-none');
       slide.classList.add('transition-' + transition);
-      if (imageUrl) setSlideImage(documentCopy, slideNumber, imageUrl, 'Slide ' + slideNumber + ' image', placement);
+      if (imageUrl) setSlideImage(documentCopy, slideNumber, imageUrl, imageAlt, placement);
       code.value = '<!doctype html>\\n' + documentCopy.documentElement.outerHTML;
       refresh();
       setStatus('Unsaved');
@@ -333,7 +369,7 @@ export function renderEditorPage(deckId: string): string {
     function clearSlideImage() {
       const documentCopy = new DOMParser().parseFromString(code.value, 'text/html');
       const { slide, slideNumber } = selectedSlide(documentCopy);
-      slide.querySelector('.visual')?.remove();
+      slide.querySelector('.visual:not(.chart-visual)')?.remove();
       slide.classList.remove('has-visual', 'visual-left', 'visual-right', 'visual-background', 'visual-full');
       slide.style.removeProperty('grid-template-columns');
       slide.style.removeProperty('grid-template-rows');
@@ -356,8 +392,10 @@ export function renderEditorPage(deckId: string): string {
       try { applyDesign(); } catch (error) { addMessage('assistant', error.message); setStatus('Design failed'); }
     });
     document.getElementById('clearImage').addEventListener('click', () => {
+      if (!selectedSlideHasImage()) return;
       try { clearSlideImage(); } catch (error) { addMessage('assistant', error.message); setStatus('Design failed'); }
     });
+    document.getElementById('designSlide').addEventListener('input', loadSelectedSlideControls);
     function makeSplitter(splitter, onMove) {
       let dragging = false;
       splitter.addEventListener('pointerdown', (event) => {
@@ -406,6 +444,29 @@ export function renderEditorPage(deckId: string): string {
       try { await api('/save', { method: 'POST', body: JSON.stringify({ html: code.value }) }); setStatus('Draft saved'); }
       catch (error) { setStatus('Save failed'); addMessage('assistant', error.message); }
     });
+    document.getElementById('printPdf').addEventListener('click', () => {
+      setStatus('Opening PDF view');
+      const printableHtml = code.value.replace('</body>', '<script>setTimeout(() => window.print(), 400);<\\/script></body>');
+      const printUrl = URL.createObjectURL(new Blob([printableHtml], { type: 'text/html' }));
+      window.open(printUrl, '_blank', 'noopener');
+      setTimeout(() => URL.revokeObjectURL(printUrl), 60000);
+      setStatus('PDF view opened');
+    });
+    document.getElementById('exportPptx').addEventListener('click', async () => {
+      setStatus('Preparing PPTX');
+      const button = document.getElementById('exportPptx');
+      button.disabled = true;
+      try {
+        await api('/save', { method: 'POST', body: JSON.stringify({ html: code.value }) });
+        window.location.href = '/api/editor/' + encodeURIComponent(deckId) + '/export/pptx' + tokenQuery();
+        setTimeout(() => setStatus('PPTX download started'), 800);
+      } catch (error) {
+        setStatus('PPTX failed');
+        addMessage('assistant', error.message);
+      } finally {
+        button.disabled = false;
+      }
+    });
     document.getElementById('apply').addEventListener('click', async () => {
       const instruction = document.getElementById('instruction');
       const prompt = instruction.value.trim();
@@ -415,7 +476,7 @@ export function renderEditorPage(deckId: string): string {
       setStatus('AI editing');
       document.getElementById('apply').disabled = true;
       try {
-        const data = await api('/ai', { method: 'POST', body: JSON.stringify({ html: code.value, instruction: prompt }) });
+        const data = await api('/ai', { method: 'POST', body: JSON.stringify({ html: code.value, instruction: prompt, selectedSlide: Number(document.getElementById('imageSlide').value) }) });
         code.value = data.html;
         refresh();
         addMessage('assistant', data.summary || 'The requested change is ready in the preview.');
@@ -461,6 +522,18 @@ export function renderEditorPage(deckId: string): string {
   </script>
 </body>
 </html>`;
+}
+
+export function hasRemovableImageInSlideHtml(html: string, slideNumber: number): boolean {
+  const slides = [...html.matchAll(/<article\b[^>]*class=(?:"[^"]*\bslide\b[^"]*"|'[^']*\bslide\b[^']*')[^>]*>[\s\S]*?<\/article>/gi)];
+  const slide = slides[slideNumber - 1]?.[0];
+  if (!slide) return false;
+  return [...slide.matchAll(/<figure\b[^>]*>[\s\S]*?<\/figure>/gi)].some((match) => {
+    const figure = match[0];
+    return /\bclass=(?:"[^"]*\bvisual\b[^"]*"|'[^']*\bvisual\b[^']*')/i.test(figure) &&
+      !/\bclass=(?:"[^"]*\bchart-visual\b[^"]*"|'[^']*\bchart-visual\b[^']*')/i.test(figure) &&
+      /<img\b/i.test(figure);
+  });
 }
 
 function escapeHtml(value: string): string {

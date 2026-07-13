@@ -28,6 +28,26 @@ export type DeckTransition = SlideTransition | "varied";
 
 export type ImagePlacement = "right" | "left" | "background" | "full";
 
+export type DataFileKind = "csv" | "xlsx";
+
+export interface DataFileInput {
+  id: string;
+  name: string;
+  path: string;
+  kind: DataFileKind;
+  source: "slack" | "upload";
+  sourceUrl?: string;
+}
+
+export interface ChartSpec {
+  type: "bar" | "line";
+  title: string;
+  labels: string[];
+  values: number[];
+  valueLabel: string;
+  sourceRowCount?: number;
+}
+
 export interface DeckRequest {
   topic: string;
   title?: string;
@@ -50,6 +70,15 @@ export interface DeckRequest {
   requesterUserId?: string;
   channelId?: string;
   threadTs?: string;
+  dataFiles?: DataFileInput[];
+  templateFileId?: string;
+  templateKind?: "pdf" | "pptx";
+  slackResearch?: {
+    query?: string;
+    fromDate?: string;
+    toDate?: string;
+    person?: string;
+  };
 }
 
 export interface ResearchSource {
@@ -77,12 +106,14 @@ export interface DeckAsset {
 export interface SlidePlan {
   title: string;
   subtitle?: string;
-  layout: "title" | "section" | "image" | "bullets" | "quote" | "comparison" | "timeline" | "closing";
+  layout: "title" | "section" | "image" | "bullets" | "quote" | "comparison" | "timeline" | "chart" | "closing";
   bullets: string[];
   visualPrompt?: string;
   imageQuery?: string;
   speakerNotes?: string;
   citationUrls?: string[];
+  dataCitation?: string;
+  chart?: ChartSpec;
 }
 
 export interface DeckPlan {

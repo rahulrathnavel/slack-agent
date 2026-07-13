@@ -38,7 +38,8 @@ describe("source-grounded fallback", () => {
 
     const plan = createFallbackPlan(request, sources);
     const visibleText = plan.slides.flatMap((slide) => [slide.title, ...slide.bullets]).join(" ");
-    expect(plan.slides).toHaveLength(4);
+    expect(plan.slides).toHaveLength(5);
+    expect(plan.slides.at(-1)?.title).toBe("Thank You");
     expect(visibleText).toContain("public datasets");
     expect(visibleText).toContain("shared leaderboards");
     expect(visibleText).not.toContain("central theme of this presentation");
@@ -71,7 +72,7 @@ describe("source-grounded fallback", () => {
 });
 
 describe("advanced image controls", () => {
-  it("uses a replaceable sample image when a slide asks for an image without a URL", () => {
+  it("does not create a dummy image when no URL is supplied", () => {
     const request: DeckRequest = {
       topic: "Kaggle overview",
       presenters: [],
@@ -89,11 +90,6 @@ describe("advanced image controls", () => {
     };
 
     const controls = parseAdvancedControls(request);
-    expect(controls.assets).toHaveLength(1);
-    expect(controls.assets[0]).toMatchObject({
-      slideIndex: 1,
-      placement: "right",
-      url: "/assets/pioltppt-open-image.svg"
-    });
+    expect(controls.assets).toHaveLength(0);
   });
 });

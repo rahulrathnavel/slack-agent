@@ -8,6 +8,7 @@ import { logger } from "./logger.js";
 import { mountMcpRoutes } from "./mcp/server.js";
 import { createSlackApp, slackManifest, writeManifestFile } from "./slack/app.js";
 import { ensureDirectories } from "./storage/files.js";
+import { mountWorkspaceRoutes } from "./workspace/routes.js";
 
 async function main(): Promise<void> {
   await ensureDirectories([
@@ -15,6 +16,8 @@ async function main(): Promise<void> {
     config.installationDir,
     config.editorDraftsDir,
     config.editorRevisionsDir,
+    config.uploadsDir,
+    config.exportsDir,
     config.publicDir,
     config.decksDir
   ]);
@@ -44,6 +47,7 @@ async function main(): Promise<void> {
   });
 
   mountEditorRoutes(receiver.app, slackApp.client);
+  mountWorkspaceRoutes(receiver.app, agent);
 
   receiver.app.get("/decks/:deckId/deck.json", (_req, res) => {
     res.status(404).send("Not found");
@@ -53,7 +57,8 @@ async function main(): Promise<void> {
     "/assets",
     express.static(path.join(config.publicDir, "assets"), {
       immutable: false,
-      maxAge: "5m"
+      maxAge: "5m",
+      setHeaders: (res) => res.setHeader("X-Content-Type-Options", "nosniff")
     })
   );
 
@@ -62,7 +67,8 @@ async function main(): Promise<void> {
     express.static(config.decksDir, {
       index: "index.html",
       immutable: false,
-      maxAge: "5m"
+      maxAge: "5m",
+      setHeaders: (res) => res.setHeader("X-Content-Type-Options", "nosniff")
     })
   );
 

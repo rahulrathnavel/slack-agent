@@ -7,6 +7,7 @@ import type { WebClient } from "@slack/web-api";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { extractJson, NvidiaClient } from "../services/nvidia.js";
+import { exportDeckToPptx } from "../services/pptxExport.js";
 import type { DeckPlan, DeckRequest } from "../types.js";
 import { readJsonFile } from "../storage/files.js";
 import { renderEditorPage } from "./page.js";
@@ -14,6 +15,7 @@ import { isValidEditorToken } from "./security.js";
 
 const MAX_HTML_BYTES = 1_500_000;
 const EDITOR_TARGETED_AI_TIMEOUT_MS = 55_000;
+const MAX_AI_TARGET_SLIDES = 4;
 const DECK_ID_PATTERN = /^\d+-[A-Za-z0-9_-]+$/;
 
 interface DeckManifest {
@@ -79,11 +81,14 @@ export function mountEditorRoutes(app: Application, slackClient: WebClient, nvid
 
   api.post("/:deckId/ai", async (req, res) => {
     try {
+      const deckId = res.locals.deckId as string;
       const html = validatedHtml(req.body?.html);
       const instruction = String(req.body?.instruction ?? "").trim().slice(0, 4_000);
+      const selectedSlide = positiveInteger(req.body?.selectedSlide);
       if (!instruction) throw new EditorInputError("Add an editing instruction.");
-      const result = (await applyFastHtmlEdit(html, instruction)) ?? (await editDeckHtml(nvidia, html, instruction));
-      res.json(result);
+      const result = (await applyFastHtmlEdit(html, instruction, selectedSlide)) ?? (await editDeckHtml(nvidia, deckId, html, instruction, selectedSlide));
+      await fs.writeFile(draftFile(deckId), result.html, "utf8");
+      res.json({ ...result, saved: true });
     } catch (error) {
       sendEditorError(res, error);
     }
@@ -96,6 +101,10 @@ export function mountEditorRoutes(app: Application, slackClient: WebClient, nvid
       const extension = imageExtension(mime);
       if (!extension || !Buffer.isBuffer(req.body) || !req.body.length) {
         throw new EditorInputError("Choose a PNG, JPEG, WebP, GIF, or AVIF image.");
+      }
+      const detectedExtension = detectImageExtension(req.body);
+      if (detectedExtension !== extension) {
+        throw new EditorInputError("The uploaded bytes do not match the declared image type.");
       }
       const assetsDir = path.join(config.decksDir, deckId, "assets");
       const filename = `${nanoid(14)}.${extension}`;
@@ -118,6 +127,24 @@ export function mountEditorRoutes(app: Application, slackClient: WebClient, nvid
       const title = extractDeckTitle(html, manifest.plan.title);
       const notified = await notifySlack(slackClient, manifest, title);
       res.json({ ok: true, title, publicUrl: manifest.publicUrl, notified });
+    } catch (error) {
+      sendEditorError(res, error);
+    }
+  });
+
+  api.get("/:deckId/export/pptx", async (_req, res) => {
+    try {
+      const deckId = res.locals.deckId as string;
+      const manifest = await readManifest(deckId);
+      const { filename, buffer } = await exportDeckToPptx({
+        deckId,
+        plan: manifest.plan,
+        request: manifest.request,
+        html: await currentDeckHtml(deckId)
+      });
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
+      res.send(buffer);
     } catch (error) {
       sendEditorError(res, error);
     }
@@ -147,42 +174,64 @@ function imageExtension(mime: string): string | undefined {
   }[mime];
 }
 
+function detectImageExtension(buffer: Buffer): string | undefined {
+  if (
+    buffer.length >= 45 &&
+    buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) &&
+    buffer.subarray(12, 16).toString("ascii") === "IHDR" &&
+    validImageDimensions(buffer.readUInt32BE(16), buffer.readUInt32BE(20)) &&
+    buffer.includes(Buffer.from("IEND"), Math.max(0, buffer.length - 32))
+  ) return "png";
+  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer.at(-2) === 0xff && buffer.at(-1) === 0xd9) return "jpg";
+  if (
+    buffer.length >= 20 &&
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP" &&
+    buffer.readUInt32LE(4) + 8 <= buffer.length
+  ) return "webp";
+  if (
+    buffer.length >= 14 &&
+    /^GIF8[79]a$/.test(buffer.subarray(0, 6).toString("ascii")) &&
+    validImageDimensions(buffer.readUInt16LE(6), buffer.readUInt16LE(8)) &&
+    buffer.at(-1) === 0x3b
+  ) return "gif";
+  if (
+    buffer.length >= 16 &&
+    buffer.subarray(4, 8).toString("ascii") === "ftyp" &&
+    /^(?:avif|avis|mif1)$/.test(buffer.subarray(8, 12).toString("ascii")) &&
+    buffer.readUInt32BE(0) <= buffer.length
+  ) return "avif";
+  return undefined;
+}
+
+function validImageDimensions(width: number, height: number): boolean {
+  return width > 0 && height > 0 && width <= 12_000 && height <= 12_000 && width * height <= 40_000_000;
+}
+
 async function editDeckHtml(
   nvidia: NvidiaClient,
+  deckId: string,
   html: string,
-  instruction: string
+  instruction: string,
+  selectedSlide?: number
 ): Promise<{ html: string; summary: string }> {
   const slideBlocks = extractSlideBlocks(html);
-  const targetIndexes = inferTargetSlideIndexes(html, instruction);
-  if (slideBlocks.length && targetIndexes.length) {
-    return editTargetedSlides(nvidia, html, instruction, targetIndexes);
+  if (!slideBlocks.length) {
+    throw new EditorInputError("This deck has no editable slide blocks. Regenerate it with the current renderer before using AI edits.");
   }
-
-  const output = await nvidia.chatText(
-    [
-      {
-        role: "system",
-        content: `You are the PioltPPT deck editor. Apply only the requested change to a complete presentation HTML document.
-Return the complete updated HTML and nothing else.
-Preserve navigation, keyboard controls, responsive layout, print styles, source panel, and existing content unless the request changes them.
-Never add placeholder copy or visible editing instructions.
-Never invent an image URL. Add an image only when the user supplies its URL.
-Keep slide text concise and presentation-ready.
-Do not wrap the result in Markdown fences.`
-      },
-      {
-        role: "user",
-        content: `Editing instruction:\n${instruction}\n\nCurrent HTML:\n${html}`
-      }
-    ],
-    { model: config.NVIDIA_MODEL_PRIMARY, temperature: 0.15, maxTokens: 8_000, timeoutMs: 35_000 }
-  );
-  const updated = validatedHtml(extractHtml(output));
-  return { html: updated, summary: "The requested change is ready in the preview." };
+  const targetIndexes = inferTargetSlideIndexes(html, instruction, selectedSlide);
+  if (!targetIndexes.length) {
+    throw new EditorInputError("Choose a slide in the assistant or mention a slide number in the instruction.");
+  }
+  if (targetIndexes.length > MAX_AI_TARGET_SLIDES) {
+    throw new EditorInputError(`Edit at most ${MAX_AI_TARGET_SLIDES} slides at a time so each change stays reliable.`);
+  }
+  return editTargetedSlides(nvidia, deckId, html, instruction, targetIndexes);
 }
 
 async function editTargetedSlides(
   nvidia: NvidiaClient,
+  deckId: string,
   html: string,
   instruction: string,
   targetIndexes: number[]
@@ -196,60 +245,50 @@ async function editTargetedSlides(
   const slidePayload = targetSlides
     .map((slide) => `SLIDE ${slide.index + 1}\n${slide.html}`)
     .join("\n\n---\n\n");
+  const designContext = extractDeckDesignContext(html);
   let output: string;
   try {
     output = await nvidia.chatText(
       [
         {
           role: "system",
-          content: `You are the PioltPPT slide editor. Edit only the supplied slide article blocks.
+          content: `You are the PioltPPT bounded slide editor. Edit only the supplied slide article blocks.
 Return strict JSON only:
-{"slides":[{"slideNumber":2,"html":"<article class=\\"slide ...\\">...</article>"}],"summary":"short user-facing summary"}
+{"slides":[{"slideNumber":2,"html":"<article class=\"slide ...\">...</article>"}],"summary":"short user-facing summary"}
 Rules:
-- Return complete <article> blocks only, not full HTML documents.
-- Preserve slide class names, data attributes, keyboard/nav mechanics, and existing visual CSS class conventions.
-- Do not include <html>, <head>, <body>, <style>, or <script>.
-- Keep content concise, professional, and presentation-ready.
+- Return exactly one complete <article> block for every supplied slide number, in the same order. Never return a full document.
+- Preserve each article's id, data-slide-id, aria-label, data attributes, slide number, and existing class conventions unless a requested layout needs an additional safe class.
+- Do not include html, head, body, style, script, iframe, object, embed, link, meta, base, form, input, button, SVG, event-handler attributes, or javascript/data URLs.
+- Keep content concise, professional, relevant to the existing slide, and presentation-ready. Do not invent facts or placeholders.
 - Treat natural-language requests as real editing directions. For example, "combine the points into one paragraph" means remove the bullets and create one clear paragraph from their meaning.
-- A redesign request may change layout, hierarchy, typography, colors, text structure, or image placement, but it must keep the slide usable and coherent.
-- If adding an image URL supplied by the user, use the exact URL from the instruction.
-- For requested right-side images, make the returned article resistant to narrow preview panes by adding inline layout on the article:
-  style="grid-template-columns: minmax(0, 1fr) minmax(220px, .48fr); grid-template-rows: minmax(0, 1fr); align-items: center;"
-- For requested right-side images, use:
-  <figure class="visual visual-contain" style="height: min(46vh, 390px); max-height: 390px; align-self: center;"><img src="URL" alt="descriptive alt" loading="lazy" style="width: 100%; height: 100%; object-fit: contain; object-position: center; padding: clamp(14px, 3vw, 36px); background: #fff;" /></figure>
-- If text plus image cannot fit well, reduce bullets to the strongest 1-2 points before returning the article.
-- Never invent image URLs.`
+- A redesign may change hierarchy, inline presentation styles, text structure, or image placement while keeping the slide coherent and responsive.
+- Use only image URLs already present in the supplied slide or explicitly present in the editing instruction. Never invent or search for an image URL.
+- Images must use object-fit: contain by default, descriptive alt text, and a layout that reserves space so text does not overlap.
+- For a left/right image, use a responsive two-column article layout and reduce text to the strongest points if needed.`
         },
         {
           role: "user",
-          content: `Editing instruction:\n${instruction}\n\nCurrent slide blocks:\n${slidePayload}`
+          content: `Editing instruction:\n${instruction}\n\nDeck design tokens and slide CSS (reference only):\n${designContext}\n\nCurrent slide blocks:\n${slidePayload}`
         }
       ],
-      { model: config.NVIDIA_MODEL_FAST, temperature: 0.15, maxTokens: 2_800, timeoutMs: EDITOR_TARGETED_AI_TIMEOUT_MS }
-    );
+        { model: config.NVIDIA_MODEL_FAST, temperature: 0.15, maxTokens: 2_800, timeoutMs: EDITOR_TARGETED_AI_TIMEOUT_MS }
+      );
   } catch (error) {
-    logger.warn({ error, targetSlides: targetSlides.map((slide) => slide.index + 1) }, "Targeted editor AI failed; using structured slide edit fallback");
-    const fallback = applyStructuredSlideEdit(html, instruction, targetIndexes);
-    if (fallback) return fallback;
-    throw error;
+    logger.warn({ error, targetSlides: targetSlides.map((slide) => slide.index + 1) }, "Bounded slide edit failed");
+    throw new EditorInputError("The AI provider could not complete this slide edit. Your draft was not changed; please try again.", 502);
   }
-  let patch: SlidePatch;
-  try {
-    patch = parseSlidePatch(output);
-  } catch (error) {
-    logger.warn({ error, targetSlides: targetSlides.map((slide) => slide.index + 1) }, "Targeted editor AI returned invalid patch; using structured slide edit fallback");
-    const fallback = applyStructuredSlideEdit(html, instruction, targetIndexes);
-    if (fallback) return fallback;
-    throw error;
-  }
+  const patch = parseSlidePatch(output);
+  validatePatchTargets(patch, targetIndexes);
   const replacements = new Map<number, string>();
   for (const item of patch.slides) {
     const index = item.slideNumber - 1;
-    if (!targetIndexes.includes(index)) continue;
-    replacements.set(index, normalizeReturnedSlideArticle(validatedArticleHtml(item.html), instruction));
-  }
-  if (!replacements.size) {
-    throw new EditorInputError("The AI response did not include an updated slide block.");
+    const original = slideBlocks[index];
+    if (!original) throw new EditorInputError(`Slide ${item.slideNumber} no longer exists.`);
+    let replacement = validatedArticleHtml(item.html);
+    validateSlideIdentity(original.html, replacement, item.slideNumber);
+    replacement = normalizeReturnedSlideArticle(replacement, instruction);
+    validateArticleImages(deckId, original.html, replacement, instruction);
+    replacements.set(index, replacement);
   }
   return {
     html: validatedHtml(replaceSlideBlocks(html, replacements)),
@@ -257,8 +296,8 @@ Rules:
   };
 }
 
-async function applyFastHtmlEdit(html: string, instruction: string): Promise<{ html: string; summary: string } | undefined> {
-  const index = inferSlideIndex(html, instruction);
+async function applyFastHtmlEdit(html: string, instruction: string, selectedSlide?: number): Promise<{ html: string; summary: string } | undefined> {
+  const index = inferSlideIndex(html, instruction) ?? selectedSlideIndex(html, selectedSlide);
   if (index === undefined) return undefined;
 
   let nextHtml = html;
@@ -307,172 +346,7 @@ async function applyFastHtmlEdit(html: string, instruction: string): Promise<{ h
   return { html: validatedHtml(nextHtml), summary: summaries.join(" ") };
 }
 
-function applyStructuredSlideEdit(
-  html: string,
-  instruction: string,
-  targetIndexes: number[]
-): { html: string; summary: string } | undefined {
-  const replacements = new Map<number, string>();
-  const summaries: string[] = [];
-  for (const index of targetIndexes) {
-    const block = extractSlideBlocks(html)[index];
-    if (!block) continue;
-    const edited = editSlideBlockWithoutModel(block.html, instruction, index);
-    if (!edited) continue;
-    replacements.set(index, edited.html);
-    summaries.push(edited.summary);
-  }
-  if (!replacements.size) return undefined;
-  return {
-    html: validatedHtml(replaceSlideBlocks(html, replacements)),
-    summary: summaries.join(" ") || "Updated the requested slide."
-  };
-}
 
-function editSlideBlockWithoutModel(
-  slideHtml: string,
-  instruction: string,
-  index: number
-): { html: string; summary: string } | undefined {
-  const lower = instruction.toLowerCase();
-  let nextHtml = slideHtml;
-  const summaries: string[] = [];
-  const imageUrls = extractImageUrls(instruction);
-
-  if (imageUrls.length && /\bimage\b/.test(lower)) {
-    nextHtml = setSlideImageUrl(nextHtml, imageUrls[0]!, imageAltFromInstruction(instruction, imageUrls[0]!));
-    nextHtml = normalizeReturnedSlideArticle(nextHtml, instruction);
-    summaries.push(`Added the supplied image to slide ${index + 1} with a contained layout.`);
-  }
-
-  if (shouldMakeSingleLine(lower)) {
-    const changed = makeSlideSingleLine(nextHtml);
-    if (changed) {
-      nextHtml = changed;
-      summaries.push(`Redesigned slide ${index + 1} as a single-line slide.`);
-    }
-  } else if (shouldConvertToParagraph(lower)) {
-    const changed = makeSlideParagraph(nextHtml);
-    if (changed) {
-      nextHtml = changed;
-      summaries.push(`Combined slide ${index + 1} into one presentation-ready paragraph.`);
-    }
-  } else if (/\b(concise|brief|shorten|simplify|clean)\b/.test(lower)) {
-    const changed = keepFirstBulletOnly(nextHtml);
-    if (changed) {
-      nextHtml = changed;
-      summaries.push(`Made slide ${index + 1} more concise.`);
-    }
-  }
-
-  if (nextHtml === slideHtml || !summaries.length) return undefined;
-  return { html: validatedArticleHtml(nextHtml), summary: summaries.join(" ") };
-}
-
-function shouldMakeSingleLine(lowerInstruction: string): boolean {
-  return (
-    /\b(single|one)\s+(line|sentence|statement)\b/.test(lowerInstruction) ||
-    /\bone\s+line\b/.test(lowerInstruction) ||
-    /\bsingle\s+line\s+alone\b/.test(lowerInstruction) ||
-    (/\bredesign\b/.test(lowerInstruction) && /\b(single|one)\b/.test(lowerInstruction))
-  );
-}
-
-function shouldConvertToParagraph(lowerInstruction: string): boolean {
-  return (
-    /\b(?:into|to|as)\s+(?:a\s+)?(?:single\s+)?paragraph\b/.test(lowerInstruction) ||
-    /\b(?:combine|merge|join|convert|turn)\b[\s\S]{0,55}\b(?:points?|bullets?|list)\b/.test(lowerInstruction) ||
-    /\b(?:not\s+(?:point\s*by\s*point|bullets?|a\s+list))\b/.test(lowerInstruction)
-  );
-}
-
-function makeSlideSingleLine(slideHtml: string): string | undefined {
-  const title = plainTextFromHtml(slideHtml.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/i)?.[1] ?? "This slide");
-  const bullets = [...slideHtml.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)]
-    .map((match) => plainTextFromHtml(match[1] ?? ""))
-    .filter(Boolean);
-  const sentence = singleLineSentence(title, bullets);
-  if (!sentence) return undefined;
-
-  let nextHtml = slideHtml.replace(/<ul\b[^>]*class="[^"]*\bbullets\b[^"]*"[^>]*>[\s\S]*?<\/ul>/i, "");
-  if (/<p\b[^>]*class="[^"]*\bsubtitle\b[^"]*"[^>]*>[\s\S]*?<\/p>/i.test(nextHtml)) {
-    nextHtml = nextHtml.replace(
-      /<p\b([^>]*)class="([^"]*\bsubtitle\b[^"]*)"([^>]*)>[\s\S]*?<\/p>/i,
-      `<p$1class="$2 statement"$3>${escapeHtmlInline(sentence)}</p>`
-    );
-  } else {
-    nextHtml = nextHtml.replace(/(<\/h[12]>)/i, `$1\n      <p class="subtitle statement">${escapeHtmlInline(sentence)}</p>`);
-  }
-  return removeVisual(nextHtml);
-}
-
-function makeSlideParagraph(slideHtml: string): string | undefined {
-  const bulletItems = [...slideHtml.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)]
-    .map((match) => plainTextFromHtml(match[1] ?? ""))
-    .filter(Boolean);
-  if (!bulletItems.length) return undefined;
-
-  const paragraph = bulletItems.join(". ").replace(/\.\s*\./g, ".").replace(/([^.!?])$/, "$1.");
-  const markup = `<p class="subtitle body-copy" style="max-width: 54ch; font-size: clamp(20px, 2.05vw, 32px); line-height: 1.4;">${escapeHtmlInline(paragraph)}</p>`;
-  const nextHtml = slideHtml.replace(/<ul\b[^>]*class="[^"]*\bbullets\b[^"]*"[^>]*>[\s\S]*?<\/ul>/i, markup);
-  return nextHtml === slideHtml ? undefined : nextHtml;
-}
-
-function removeVisual(slideHtml: string): string {
-  return slideHtml
-    .replace(/\s*<figure\b[^>]*class="[^"]*\bvisual\b[^"]*"[^>]*>[\s\S]*?<\/figure>/i, "")
-    .replace(/\bhas-visual\b/g, "")
-    .replace(/\bvisual-(?:left|right|background|full)\b/g, "")
-    .replace(/class="([^"]*)"/i, (_full, classes: string) => `class="${classes.split(/\s+/).filter(Boolean).join(" ")}"`);
-}
-
-function singleLineSentence(title: string, bullets: string[]): string {
-  const topic = title.replace(/^what\s+is\s+/i, "").replace(/[?!.]+$/g, "").trim() || title;
-  const first = bullets[0] ?? "";
-  const second = bullets[1] ?? "";
-  if (!first) return `${topic} is summarized in one clear statement for the audience.`;
-  const normalizedFirst = first.charAt(0).toLowerCase() + first.slice(1);
-  let sentence = /^is\b/i.test(first) ? `${topic} ${normalizedFirst}` : `${topic} is ${normalizedFirst}`;
-  if (second && sentence.length < 105) {
-    sentence += `, supported by ${second.charAt(0).toLowerCase()}${second.slice(1)}`;
-  }
-  return sentence.replace(/\s+/g, " ").slice(0, 170).replace(/[,:;\s]+$/g, ".");
-}
-
-function setSlideImageUrl(slideHtml: string, imageUrl: string, altText: string): string {
-  const figure = `<figure class="visual visual-contain visual-embedded" style="height: min(52vh, 440px); max-height: 440px; align-self: center; border: 0; background: transparent;"><img src="${escapeAttributeInline(
-    imageUrl
-  )}" alt="${escapeAttributeInline(altText)}" loading="lazy" style="${containImageStyle()}" /></figure>`;
-  let nextHtml = slideHtml.replace(/\s*<figure\b[^>]*class="[^"]*\bvisual\b[^"]*"[^>]*>[\s\S]*?<\/figure>/i, "");
-  nextHtml = nextHtml.replace(/<\/article>\s*$/i, `${figure}\n</article>`);
-  return nextHtml;
-}
-
-function imageAltFromInstruction(instruction: string, imageUrl: string): string {
-  const title = instruction.match(/(?:image|photo|logo)\s+(?:of|for)\s+([a-z0-9 .'-]{3,60})/i)?.[1]?.trim();
-  if (title) return title;
-  return imageUrl.split(/[/?#]/).filter(Boolean).pop()?.replace(/[-_]+/g, " ").replace(/\.[a-z0-9]+$/i, "") || "Slide image";
-}
-
-function plainTextFromHtml(value: string): string {
-  return value
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function escapeHtmlInline(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function escapeAttributeInline(value: string): string {
-  return escapeHtmlInline(value).replace(/"/g, "&quot;");
-}
 
 function inferSlideIndex(html: string, instruction: string): number | undefined {
   const slideNumber = instruction.match(/\bslide\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/i)?.[1];
@@ -484,6 +358,12 @@ function inferSlideIndex(html: string, instruction: string): number | undefined 
   const matches = [...html.matchAll(/<article\b[^>]*class="[^"]*\bslide\b[^"]*"[^>]*>[\s\S]*?<\/article>/gi)];
   const firstVisualIndex = matches.findIndex((match) => /<figure\b[^>]*class="[^"]*\bvisual\b/i.test(match[0]));
   return firstVisualIndex >= 0 ? firstVisualIndex : undefined;
+}
+
+function selectedSlideIndex(html: string, selectedSlide?: number): number | undefined {
+  if (!selectedSlide) return undefined;
+  const index = selectedSlide - 1;
+  return index >= 0 && index < extractSlideBlocks(html).length ? index : undefined;
 }
 
 function updateSlide(html: string, index: number, edit: (slideHtml: string) => string | undefined): string | undefined {
@@ -553,7 +433,7 @@ function containSlideImage(slideHtml: string): string | undefined {
   return nextHtml;
 }
 
-function inferTargetSlideIndexes(html: string, instruction: string): number[] {
+function inferTargetSlideIndexes(html: string, instruction: string, selectedSlide?: number): number[] {
   const blocks = extractSlideBlocks(html);
   const indexes = new Set<number>();
   const slidePhrase = /\bslides?\s+((?:(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s*(?:,|and|&|to|-)\s*)?)+)/gi;
@@ -567,6 +447,10 @@ function inferTargetSlideIndexes(html: string, instruction: string): number[] {
   }
   if (!indexes.size && /\ball\s+slides\b/i.test(instruction)) {
     blocks.forEach((block) => indexes.add(block.index));
+  }
+  if (!indexes.size) {
+    const selected = selectedSlideIndex(html, selectedSlide);
+    if (selected !== undefined) indexes.add(selected);
   }
   return [...indexes].sort((a, b) => a - b);
 }
@@ -588,30 +472,133 @@ interface SlidePatch {
 }
 
 function parseSlidePatch(output: string): SlidePatch {
-  const parsed = JSON.parse(extractJson(output)) as Partial<SlidePatch>;
+  let parsed: Partial<SlidePatch>;
+  try {
+    parsed = JSON.parse(extractJson(output)) as Partial<SlidePatch>;
+  } catch {
+    throw new EditorInputError("The AI returned an invalid slide patch. Your draft was not changed.");
+  }
   if (!Array.isArray(parsed.slides)) {
-    throw new EditorInputError("The AI response did not contain slide updates.");
+    throw new EditorInputError("The AI response did not contain slide updates. Your draft was not changed.");
   }
   return {
-    slides: parsed.slides
-      .map((slide) => ({
-        slideNumber: Number(slide.slideNumber),
-        html: String(slide.html ?? "")
-      }))
-      .filter((slide) => Number.isInteger(slide.slideNumber) && slide.slideNumber > 0 && slide.html),
-    summary: typeof parsed.summary === "string" ? parsed.summary : undefined
+    slides: parsed.slides.map((slide) => ({
+      slideNumber: Number(slide.slideNumber),
+      html: String(slide.html ?? "")
+    })),
+    summary: typeof parsed.summary === "string" ? parsed.summary.slice(0, 500) : undefined
   };
+}
+
+function validatePatchTargets(patch: SlidePatch, targetIndexes: number[]): void {
+  const expected = targetIndexes.map((index) => index + 1);
+  const actual = patch.slides.map((slide) => slide.slideNumber);
+  if (
+    actual.length !== expected.length ||
+    actual.some((slideNumber, index) => !Number.isInteger(slideNumber) || slideNumber !== expected[index]) ||
+    patch.slides.some((slide) => !slide.html.trim())
+  ) {
+    throw new EditorInputError(`The AI must return exactly slides ${expected.join(", ")} in order. Your draft was not changed.`);
+  }
+}
+
+function validateSlideIdentity(original: string, replacement: string, slideNumber: number): void {
+  for (const attribute of ["id", "data-slide-id", "aria-label"]) {
+    const originalValue = articleAttribute(original, attribute);
+    if (originalValue !== undefined && articleAttribute(replacement, attribute) !== originalValue) {
+      throw new EditorInputError(`The AI changed the identity of slide ${slideNumber}. Your draft was not changed.`);
+    }
+  }
+}
+
+function articleAttribute(articleHtml: string, name: string): string | undefined {
+  const openingTag = articleHtml.match(/^<article\b[^>]*>/i)?.[0] ?? "";
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return openingTag.match(new RegExp(`\\b${escapedName}\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')`, "i"))?.slice(1).find((value) => value !== undefined);
+}
+
+function validateArticleImages(deckId: string, original: string, replacement: string, instruction: string): void {
+  const allowed = new Set([...extractImageSources(original), ...extractImageUrls(instruction)].map(decodeHtmlEntitiesForValidation));
+  const trustedPrefix = `/decks/${encodeURIComponent(deckId)}/assets/`;
+  for (const rawSource of extractImageSources(replacement)) {
+    const source = decodeHtmlEntitiesForValidation(rawSource);
+    if (allowed.has(source)) continue;
+    if (source.startsWith(trustedPrefix) && /^\/decks\/[A-Za-z0-9%_-]+\/assets\/[A-Za-z0-9._-]+$/.test(source)) continue;
+    throw new EditorInputError("The AI introduced an image URL that was not supplied by you. Your draft was not changed.");
+  }
+}
+
+function extractImageSources(value: string): string[] {
+  return [...value.matchAll(/<img\b[^>]*\bsrc\s*=\s*(?:\"([^\"]+)\"|'([^']+)')[^>]*>/gi)]
+    .map((match) => match[1] ?? match[2] ?? "")
+    .filter(Boolean);
+}
+
+function extractDeckDesignContext(html: string): string {
+  const style = html.match(/<style\b[^>]*>([\s\S]*?)<\/style>/i)?.[1] ?? "";
+  const root = style.match(/:root\s*\{[^}]*\}/i)?.[0] ?? "";
+  const rules = [...style.matchAll(/([^{}]*(?:\.slide|\.content|\.visual|\.bullets|\bh1\b|\bh2\b|\.subtitle)[^{}]*)\{([^{}]*)\}/gi)]
+    .slice(0, 18)
+    .map((match) => `${match[1]?.trim()} { ${match[2]?.trim()} }`)
+    .join("\n");
+  return `${root}\n${rules}`.trim().slice(0, 8_000) || "Use the existing classes and responsive layout in the supplied article.";
 }
 
 function validatedArticleHtml(value: string): string {
   const html = value.trim();
-  if (!/^<article\b/i.test(html) || !/<\/article>$/i.test(html) || !/\bclass="[^"]*\bslide\b/i.test(html)) {
+  if (!/^<article\b/i.test(html) || !/<\/article>$/i.test(html) || !/\bclass=(?:"[^"]*\bslide\b[^"]*"|'[^']*\bslide\b[^']*')/i.test(html)) {
     throw new EditorInputError("The AI response must return complete slide article blocks.");
   }
-  if (/<(?:html|head|body|style|script)\b/i.test(html)) {
-    throw new EditorInputError("The AI response included unsupported document-level markup.");
-  }
+  validateSafeSlideMarkup(html);
   return html;
+}
+
+function validateSafeSlideMarkup(html: string): void {
+  if ((html.match(/<article\b/gi)?.length ?? 0) !== 1 || (html.match(/<\/article>/gi)?.length ?? 0) !== 1) {
+    throw new EditorInputError("The AI response must contain exactly one slide article.");
+  }
+  const allowedTags = new Set(["article", "div", "h1", "h2", "h3", "p", "ul", "ol", "li", "figure", "img", "blockquote", "footer", "span", "strong", "em", "small", "br", "a"]);
+  for (const match of html.matchAll(/<\/?([a-z][a-z0-9-]*)\b[^>]*>/gi)) {
+    const tag = (match[1] ?? "").toLowerCase();
+    if (!allowedTags.has(tag)) throw new EditorInputError(`The AI response included an unsupported <${tag}> element.`);
+    if (match[0].startsWith("</")) continue;
+    const attributeText = match[0].replace(/^<[a-z][a-z0-9-]*/i, "").replace(/\/?\s*>$/, "");
+    const consumed = attributeText.replace(/\s+([a-z_:][a-z0-9_.:-]*)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/gi, (_full, name: string) => {
+      validateSlideAttribute(tag, name, _full);
+      return "";
+    });
+    if (consumed.trim()) throw new EditorInputError("The AI response included malformed slide attributes.");
+  }
+}
+
+function validateSlideAttribute(tag: string, rawName: string, rawAttribute: string): void {
+  const name = rawName.toLowerCase();
+  const allowed = /^(?:class|id|style|title|role|alt|loading|width|height|target|rel|tabindex|aria-[a-z0-9_.:-]+|data-[a-z0-9_.:-]+)$/i.test(name);
+  if (name.startsWith("on") || name === "srcset" || name === "poster" || name === "action" || name === "formaction") {
+    throw new EditorInputError("The AI response included an unsafe resource or event attribute.");
+  }
+  if (name === "src" && tag !== "img") throw new EditorInputError("Only slide images may use a src attribute.");
+  if (name === "href" && tag !== "a") throw new EditorInputError("Only links may use a href attribute.");
+  if (!allowed && name !== "src" && name !== "href") throw new EditorInputError(`The AI response included an unsupported ${name} attribute.`);
+  const value = decodeHtmlEntitiesForValidation(rawAttribute.match(/=\s*(?:"([^"]*)"|'([^']*)'|([^\s]+))/)?.slice(1).find((part) => part !== undefined) ?? "").trim();
+  if (name === "style" && /(?:url\s*\(|expression\s*\(|@import|behavior\s*:|-moz-binding)/i.test(value)) {
+    throw new EditorInputError("The AI response included unsafe external CSS.");
+  }
+  if (name === "href" && value && !/^(?:https?:\/\/|\/|#)/i.test(value)) {
+    throw new EditorInputError("The AI response included an unsafe link URL.");
+  }
+  if (name === "src" && value && !/^(?:https?:\/\/|\/)/i.test(value)) {
+    throw new EditorInputError("The AI response included an unsafe image URL.");
+  }
+}
+
+function decodeHtmlEntitiesForValidation(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);?/gi, (_match, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#([0-9]+);?/g, (_match, code: string) => String.fromCodePoint(Number.parseInt(code, 10)))
+    .replace(/&colon;/gi, ":")
+    .replace(/&sol;/gi, "/")
+    .replace(/&amp;/gi, "&");
 }
 
 function extractImageUrls(value: string): string[] {
@@ -768,6 +755,15 @@ async function notifySlack(client: WebClient, manifest: DeckManifest, title: str
   }
 }
 
+async function currentDeckHtml(deckId: string): Promise<string> {
+  try {
+    return await fs.readFile(draftFile(deckId), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return fs.readFile(deckFile(deckId, "index.html"), "utf8");
+  }
+}
+
 async function readManifest(deckId: string): Promise<DeckManifest> {
   const manifest = await readJsonFile<DeckManifest>(deckFile(deckId, "deck.json"));
   if (!manifest) throw new EditorInputError("Deck not found.", 404);
@@ -785,6 +781,11 @@ function draftFile(deckId: string): string {
 function safeDeckId(value: string | string[] | undefined): string | undefined {
   const deckId = Array.isArray(value) ? value[0] : value;
   return deckId && DECK_ID_PATTERN.test(deckId) ? deckId : undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : undefined;
 }
 
 function editorTokenFromRequest(req: Request): string | undefined {
