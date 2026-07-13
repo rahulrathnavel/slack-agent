@@ -16,7 +16,7 @@ export function renderEditorPage(deckId: string): string {
     button:hover, .button-link:hover { border-color: var(--accent); color: var(--accent); }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     button.primary:hover { background: #066c4d; color: #fff; }
-    button:disabled { cursor: wait; opacity: .6; }
+    button:disabled { cursor: not-allowed; opacity: .45; border-color: var(--line); color: var(--muted); }
     .app { --preview-pane: 57%; --navigator-pane: 230px; height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr); }
     header { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 58px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
     .identity { min-width: 0; display: flex; align-items: baseline; gap: 14px; }
@@ -47,10 +47,20 @@ export function renderEditorPage(deckId: string): string {
     .navigator { min-height: 0; overflow: auto; border-left: 1px solid #303735; background: #161d1b; color: #d8e1dc; padding: 12px; }
     .navigator h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; color: #9fb0a8; }
     .nav-group { margin-bottom: 14px; }
-    .nav-item { width: 100%; height: auto; min-height: 32px; justify-content: flex-start; text-align: left; padding: 7px 8px; margin: 0 0 6px; border-color: #34403c; background: #111615; color: #e9efeb; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
-    .nav-item small { display: block; color: #98a7a0; font-weight: 550; margin-top: 2px; }
+    .nav-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: start; margin: 0 0 6px; border: 1px solid #34403c; background: #111615; }
+    .nav-select { min-width: 0; min-height: 48px; height: auto; justify-content: flex-start; text-align: left; padding: 7px 8px; border: 0; background: transparent; color: #e9efeb; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+    .nav-select small { display: block; color: #98a7a0; font-weight: 550; margin-top: 2px; }
+    .nav-edit { min-width: 38px; min-height: 32px; margin: 7px 7px 0 0; padding: 0 8px; border-color: #405049; background: #1d2723; color: #bfe2d3; font-size: 12px; }
     .code-meta { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-top: 1px solid #303735; color: #aab5af; font-size: 12px; }
     #chatPane { grid-template-rows: minmax(0, 1fr) auto; }
+    #designPane { align-content: start; overflow: auto; padding: 18px; background: #f8faf8; }
+    .toolbox { width: min(760px, 100%); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .toolbox h2 { grid-column: 1 / -1; margin: 0 0 2px; font-size: 18px; }
+    .toolbox p { grid-column: 1 / -1; margin: -4px 0 4px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .field { display: grid; gap: 6px; color: #405049; font-size: 13px; font-weight: 750; }
+    .field input, .field select { width: 100%; min-height: 38px; border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 0 10px; }
+    .field input[type="color"] { padding: 3px; }
+    .tool-actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
     .messages { min-height: 0; overflow: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
     .message { max-width: 88%; padding: 11px 13px; border-left: 3px solid var(--line); background: var(--bg); line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
     .message.user { align-self: flex-end; border-left-color: var(--accent-2); }
@@ -62,6 +72,12 @@ export function renderEditorPage(deckId: string): string {
     #instruction { width: 100%; min-height: 82px; max-height: 180px; resize: vertical; border: 1px solid var(--line); padding: 10px; outline: none; }
     #instruction:focus { border-color: var(--accent); }
     .fatal { height: 100%; display: grid; place-items: center; padding: 28px; color: #9f1239; text-align: center; font-weight: 750; line-height: 1.4; }
+    dialog { width: min(560px, calc(100vw - 30px)); border: 1px solid var(--line); padding: 0; box-shadow: 0 20px 55px rgba(18, 31, 25, .25); }
+    dialog::backdrop { background: rgba(10, 18, 14, .48); }
+    .quick-edit { display: grid; gap: 14px; padding: 18px; }
+    .quick-edit h2 { margin: 0; font-size: 18px; }
+    .quick-edit textarea { width: 100%; min-height: 130px; resize: vertical; padding: 10px; border: 1px solid var(--line); font: 14px/1.45 "Cascadia Code", Consolas, monospace; }
+    .quick-edit footer { display: flex; justify-content: flex-end; gap: 8px; }
     @media (max-width: 1050px) {
       body { overflow: auto; }
       .app { min-height: 100vh; height: auto; grid-template-rows: auto auto; }
@@ -89,13 +105,13 @@ export function renderEditorPage(deckId: string): string {
   <div class="app">
     <header>
       <div class="identity"><span class="brand">Deck Playground</span><span class="deck-id">${safeDeckId}</span></div>
-      <div class="actions"><span class="status" id="status">Loading</span><a class="button-link" id="openDeck" target="_blank" rel="noopener">Open deck</a><button id="save">Save draft</button><button class="primary" id="publish">Finish editing</button></div>
+      <div class="actions"><span class="status" id="status">Loading</span><a class="button-link" id="openDeck" target="_blank" rel="noopener">Open deck</a><button id="printPdf" type="button">PDF</button><button id="exportPptx" type="button">PPTX</button><button id="save">Save draft</button><button class="primary" id="publish">Finish editing</button></div>
     </header>
     <main>
       <section class="preview"><iframe id="preview" title="Deck preview" sandbox="allow-scripts allow-popups"></iframe></section>
       <div class="splitter vertical" id="mainSplitter" role="separator" aria-label="Resize preview and editor panes"></div>
       <section class="workspace">
-        <div class="tabs"><button class="tab active" data-pane="codePane">HTML</button><button class="tab" data-pane="chatPane">AI assistant</button></div>
+        <div class="tabs"><button class="tab active" data-pane="codePane">HTML</button><button class="tab" data-pane="chatPane">AI assistant</button><button class="tab" data-pane="designPane">Design</button></div>
         <div class="pane active" id="codePane">
           <div class="code-wrap"><textarea id="code" spellcheck="false" aria-label="Deck HTML source"></textarea></div>
           <div class="splitter vertical" id="navSplitter" role="separator" aria-label="Resize source and navigator panes"></div>
@@ -106,10 +122,12 @@ export function renderEditorPage(deckId: string): string {
           </aside>
           <div class="code-meta"><span>index.html</span><span id="size"></span></div>
         </div>
-        <div class="pane" id="chatPane"><div class="messages" id="messages"></div><div class="composer"><div class="chat-tools"><span>Slide</span><input id="imageSlide" type="number" min="1" value="2" aria-label="Image slide number" /><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" hidden /><button id="uploadImage">Upload image</button></div><div class="prompt-row"><textarea id="instruction" placeholder="Examples: make slide 2 more concise, move the image to the left, replace slide 3 image with https://..."></textarea><button class="primary" id="apply">Apply</button></div></div></div>
+        <div class="pane" id="chatPane"><div class="messages" id="messages"></div><div class="composer"><div class="chat-tools"><span>Selected slide</span><input id="imageSlide" type="number" min="1" value="2" aria-label="Selected slide number" /><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" hidden /><button id="uploadImage">Upload image</button></div><div class="prompt-row"><textarea id="instruction" placeholder="Examples: turn the selected slide into one paragraph, redesign slide 3 as a clean executive slide, or add an image URL to slide 2."></textarea><button class="primary" id="apply">Apply</button></div></div></div>
+        <div class="pane" id="designPane"><div class="toolbox"><h2>Slide design</h2><p>Change one slide directly. These controls update the HTML source and preview immediately.</p><label class="field">Slide number<input id="designSlide" type="number" min="1" value="1" /></label><label class="field">Font family<select id="designFont"><option value="Inter, ui-sans-serif, system-ui, sans-serif">Sans serif</option><option value="Georgia, serif">Serif</option><option value="Arial, sans-serif">Arial</option><option value="Trebuchet MS, sans-serif">Trebuchet</option></select></label><label class="field">Text size (px)<input id="designSize" type="number" min="16" max="80" value="28" /></label><label class="field">Text color<input id="designTextColor" type="color" value="#17201d" /></label><label class="field">Slide background<input id="designBackground" type="color" value="#f4f6f3" /></label><label class="field">Transition<select id="designTransition"><option value="fade">Fade</option><option value="slide">Slide</option><option value="zoom">Zoom</option><option value="none">None</option></select></label><label class="field" style="grid-column: 1 / -1;">Image URL<input id="designImageUrl" type="url" placeholder="https://example.com/image.jpg" /></label><label class="field" style="grid-column: 1 / -1;">Image alt text<input id="designImageAlt" type="text" placeholder="Describe the image for accessibility" /></label><label class="field">Image position<select id="designImagePlacement"><option value="right">Right</option><option value="left">Left</option><option value="full">Full width</option><option value="background">Background</option></select></label><div class="tool-actions"><button id="clearImage" type="button">Remove image</button><button class="primary" id="applyDesign" type="button">Apply design</button></div></div></div>
       </section>
     </main>
   </div>
+  <dialog id="quickEdit"><form class="quick-edit" method="dialog"><h2 id="quickEditTitle">Edit item</h2><textarea id="quickEditValue" aria-label="Editable value"></textarea><footer><button value="cancel">Cancel</button><button class="primary" id="quickEditSave" value="default">Apply change</button></footer></form></dialog>
   <script>
     const deckId = ${JSON.stringify(deckId)};
     const fragment = new URLSearchParams(location.hash.slice(1));
@@ -121,6 +139,10 @@ export function renderEditorPage(deckId: string): string {
     const status = document.getElementById('status');
     const size = document.getElementById('size');
     const messages = document.getElementById('messages');
+    const quickEdit = document.getElementById('quickEdit');
+    const quickEditTitle = document.getElementById('quickEditTitle');
+    const quickEditValue = document.getElementById('quickEditValue');
+    let inlineEdit;
     let timer;
 
     function setStatus(text) { status.textContent = text; }
@@ -129,6 +151,7 @@ export function renderEditorPage(deckId: string): string {
       preview.srcdoc = code.value;
       size.textContent = Math.max(1, Math.round(new Blob([code.value]).size / 1024)) + ' KB';
       rebuildNavigator();
+      updateImageControlState();
     }
     function addMessage(role, text) {
       const node = document.createElement('div');
@@ -139,7 +162,7 @@ export function renderEditorPage(deckId: string): string {
     }
     async function api(path, options = {}) {
       const controller = new AbortController();
-      const timeoutMs = path === '/ai' ? 120000 : 18000;
+      const timeoutMs = path === '/ai' ? 70000 : 18000;
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const response = await fetch('/api/editor/' + encodeURIComponent(deckId) + path + tokenQuery(), {
@@ -151,7 +174,7 @@ export function renderEditorPage(deckId: string): string {
         if (!response.ok) throw new Error(data.error || 'Request failed');
         return data;
       } catch (error) {
-        if (error.name === 'AbortError') throw new Error(path === '/ai' ? 'The AI edit is taking too long. Try a smaller slide-specific prompt.' : 'The editor API did not respond. Restart npm run dev and keep ngrok pointed at the same port.');
+        if (error.name === 'AbortError') throw new Error(path === '/ai' ? 'The AI provider did not return an edit in time. Try again; your draft has not been changed.' : 'The editor API did not respond. Restart npm run dev and keep ngrok pointed at the same port.');
         throw error;
       } finally {
         clearTimeout(timeout);
@@ -159,40 +182,54 @@ export function renderEditorPage(deckId: string): string {
     }
     async function load() {
       if (!token) throw new Error('This editor link is missing its access token. Open it again from Slack.');
-      const publicPath = '/decks/' + encodeURIComponent(deckId) + '/index.html';
-      const response = await fetch(publicPath, { cache: 'no-store' });
-      if (!response.ok) throw new Error('The published deck HTML could not be loaded.');
-      code.value = await response.text();
-      document.getElementById('openDeck').href = '/decks/' + encodeURIComponent(deckId) + '/';
+      const source = await api('/source');
+      code.value = source.html;
+      document.getElementById('openDeck').href = source.publicUrl || '/decks/' + encodeURIComponent(deckId) + '/';
       refresh();
-      setStatus('Ready');
+      loadSelectedSlideControls();
+      setStatus(source.isDraft ? 'Draft loaded' : 'Ready');
     }
     function plainText(value) {
       const doc = new DOMParser().parseFromString('<div>' + value + '</div>', 'text/html');
       return (doc.body.textContent || '').replace(/\\s+/g, ' ').trim();
     }
-    function findLineAndColumn(needle) {
-      const index = code.value.indexOf(needle);
-      if (index < 0) return { line: 1, start: 0, end: 0 };
-      const before = code.value.slice(0, index);
-      return { line: before.split('\\n').length, start: index, end: index + needle.length };
-    }
+    function lineForIndex(index) { return code.value.slice(0, index).split('\\n').length; }
     function selectSource(start, end) {
       code.focus();
       code.setSelectionRange(start, end);
       const lineHeight = 20;
-      const line = code.value.slice(0, start).split('\\n').length;
+      const line = lineForIndex(start);
       code.scrollTop = Math.max(0, (line - 6) * lineHeight);
     }
-    function addNavButton(container, label, detail, needle) {
-      const match = findLineAndColumn(needle);
-      const button = document.createElement('button');
-      button.className = 'nav-item';
-      button.innerHTML = '<span></span><small></small>';
-      button.querySelector('span').textContent = label || 'Untitled';
-      button.querySelector('small').textContent = 'Line ' + match.line + (detail ? ' - ' + detail : '');
-      button.addEventListener('click', () => selectSource(match.start, match.end));
-      container.appendChild(button);
+    function openInlineEditor(label, value, start, end, type) {
+      inlineEdit = { start, end, type };
+      quickEditTitle.textContent = 'Edit ' + label;
+      quickEditValue.value = value;
+      quickEdit.showModal();
+      setTimeout(() => quickEditValue.focus(), 0);
+    }
+    function escapeText(value) {
+      const holder = document.createElement('div');
+      holder.textContent = value;
+      return holder.innerHTML;
+    }
+    function addNavButton(container, label, detail, start, end, value, type) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'nav-item';
+      const selectButton = document.createElement('button');
+      selectButton.className = 'nav-select';
+      selectButton.innerHTML = '<span></span><small></small>';
+      selectButton.querySelector('span').textContent = label || 'Untitled';
+      selectButton.querySelector('small').textContent = 'Line ' + lineForIndex(start) + (detail ? ' - ' + detail : '');
+      selectButton.addEventListener('click', () => selectSource(start, end));
+      const editButton = document.createElement('button');
+      editButton.className = 'nav-edit';
+      editButton.type = 'button';
+      editButton.textContent = 'Edit';
+      editButton.title = 'Edit this item';
+      editButton.addEventListener('click', () => openInlineEditor(detail || 'item', value, start, end, type));
+      wrapper.append(selectButton, editButton);
+      container.appendChild(wrapper);
     }
     function rebuildNavigator() {
       const headingNav = document.getElementById('headingNav');
@@ -203,27 +240,57 @@ export function renderEditorPage(deckId: string): string {
       imageNav.textContent = '';
       const html = code.value;
       for (const match of html.matchAll(/<h[12][^>]*>([\\s\\S]*?)<\\/h[12]>/gi)) {
-        addNavButton(headingNav, plainText(match[1]).slice(0, 70), 'heading', match[0]);
+        const value = plainText(match[1]);
+        const start = (match.index || 0) + match[0].indexOf(match[1]);
+        addNavButton(headingNav, value.slice(0, 70), 'heading', start, start + match[1].length, value, 'text');
       }
       for (const match of html.matchAll(/<(?:p|li)[^>]*>([\\s\\S]*?)<\\/(?:p|li)>/gi)) {
         const text = plainText(match[1]);
-        if (text) addNavButton(paragraphNav, text.slice(0, 86), 'text', match[0]);
+        if (text) {
+          const start = (match.index || 0) + match[0].indexOf(match[1]);
+          addNavButton(paragraphNav, text.slice(0, 86), 'text', start, start + match[1].length, text, 'text');
+        }
       }
       for (const match of html.matchAll(/<img\\b[^>]*\\bsrc=["']([^"']+)["'][^>]*>/gi)) {
-        addNavButton(imageNav, match[1].slice(0, 86), 'image URL', match[1]);
+        const start = (match.index || 0) + match[0].indexOf(match[1]);
+        addNavButton(imageNav, match[1].slice(0, 86), 'image URL', start, start + match[1].length, match[1], 'url');
+        const altMatch = match[0].match(/\\balt=["']([^"']*)["']/i);
+        if (altMatch) {
+          const altStart = (match.index || 0) + match[0].indexOf(altMatch[1]);
+          addNavButton(imageNav, altMatch[1] || 'Missing alt text', 'image alt text', altStart, altStart + altMatch[1].length, altMatch[1], 'text');
+        }
       }
       if (!headingNav.children.length) headingNav.textContent = 'No headings found.';
       if (!paragraphNav.children.length) paragraphNav.textContent = 'No paragraph text found.';
       if (!imageNav.children.length) imageNav.textContent = 'No image URLs found.';
     }
-    function setSlideImage(documentCopy, slideNumber, imageUrl, altText) {
+    document.getElementById('quickEditSave').addEventListener('click', () => {
+      if (!inlineEdit) return;
+      const value = quickEditValue.value.trim();
+      if (!value) return;
+      const replacement = inlineEdit.type === 'url' ? value.replace(/"/g, '&quot;') : escapeText(value);
+      code.value = code.value.slice(0, inlineEdit.start) + replacement + code.value.slice(inlineEdit.end);
+      inlineEdit = undefined;
+      refresh();
+      setStatus('Unsaved');
+    });
+    function setSlideImage(documentCopy, slideNumber, imageUrl, altText, placement = 'right') {
       const slide = documentCopy.querySelectorAll('.slide')[slideNumber - 1];
       if (!slide) throw new Error('That slide number does not exist.');
       slide.querySelector('.visual')?.remove();
-      slide.classList.remove('visual-left', 'visual-background', 'visual-full');
-      slide.classList.add('has-visual', 'visual-right');
+      slide.classList.remove('visual-left', 'visual-right', 'visual-background', 'visual-full');
+      slide.classList.add('has-visual', placement === 'right' ? 'visual-right' : 'visual-' + placement);
+      if (placement === 'right' || placement === 'left') {
+        slide.style.gridTemplateColumns = 'minmax(0, 1fr) minmax(220px, .48fr)';
+        slide.style.gridTemplateRows = 'minmax(0, 1fr)';
+        slide.style.alignItems = 'center';
+      }
       const figure = documentCopy.createElement('figure');
-      figure.className = 'visual visual-contain';
+      figure.className = 'visual visual-contain visual-embedded';
+      figure.style.height = 'min(52vh, 440px)';
+      figure.style.maxHeight = '440px';
+      figure.style.border = '0';
+      figure.style.background = 'transparent';
       const img = documentCopy.createElement('img');
       img.src = imageUrl;
       img.alt = altText;
@@ -232,10 +299,85 @@ export function renderEditorPage(deckId: string): string {
       img.style.height = '100%';
       img.style.objectFit = 'contain';
       img.style.objectPosition = 'center';
-      img.style.padding = 'clamp(18px, 4vw, 44px)';
-      img.style.background = '#fff';
+      img.style.padding = '0';
+      img.style.background = 'transparent';
       figure.appendChild(img);
       slide.appendChild(figure);
+    }
+    function selectedSlide(documentCopy) {
+      const slideNumber = Number(document.getElementById('designSlide').value);
+      const slide = documentCopy.querySelectorAll('.slide')[slideNumber - 1];
+      if (!slide) throw new Error('That slide number does not exist.');
+      return { slide, slideNumber };
+    }
+    function selectedSlideHasImage() {
+      try {
+        const documentCopy = new DOMParser().parseFromString(code.value, 'text/html');
+        return Boolean(selectedSlide(documentCopy).slide.querySelector('.visual:not(.chart-visual) img'));
+      } catch (_error) {
+        return false;
+      }
+    }
+    function loadSelectedSlideControls() {
+      try {
+        const documentCopy = new DOMParser().parseFromString(code.value, 'text/html');
+        const { slide } = selectedSlide(documentCopy);
+        const image = slide.querySelector('.visual:not(.chart-visual) img');
+        document.getElementById('designImageUrl').value = image?.getAttribute('src') || '';
+        document.getElementById('designImageAlt').value = image?.getAttribute('alt') || '';
+        document.getElementById('designImagePlacement').value = slide.classList.contains('visual-left') ? 'left' : slide.classList.contains('visual-full') ? 'full' : slide.classList.contains('visual-background') ? 'background' : 'right';
+      } catch (_error) {
+        document.getElementById('designImageUrl').value = '';
+        document.getElementById('designImageAlt').value = '';
+      }
+      updateImageControlState();
+    }
+    function updateImageControlState() {
+      const clearButton = document.getElementById('clearImage');
+      const hasImage = selectedSlideHasImage();
+      clearButton.disabled = !hasImage;
+      clearButton.title = hasImage ? 'Remove the image from this slide' : 'This slide has no image to remove';
+    }
+    function applyDesign() {
+      const documentCopy = new DOMParser().parseFromString(code.value, 'text/html');
+      const { slide, slideNumber } = selectedSlide(documentCopy);
+      const font = document.getElementById('designFont').value;
+      const fontSize = Math.max(16, Math.min(80, Number(document.getElementById('designSize').value) || 28));
+      const textColor = document.getElementById('designTextColor').value;
+      const background = document.getElementById('designBackground').value;
+      const transition = document.getElementById('designTransition').value;
+      const imageUrl = document.getElementById('designImageUrl').value.trim();
+      const imageAlt = document.getElementById('designImageAlt').value.trim() || ('Slide ' + slideNumber + ' image');
+      const placement = document.getElementById('designImagePlacement').value;
+      slide.style.background = background;
+      const content = slide.querySelector('.content');
+      if (content) {
+        content.style.fontFamily = font;
+        content.style.color = textColor;
+        content.style.fontSize = fontSize + 'px';
+      }
+      slide.querySelectorAll('h1, h2, p, li').forEach((node) => { node.style.color = textColor; });
+      slide.querySelectorAll('h1, h2').forEach((node) => { node.style.fontFamily = font; });
+      slide.classList.remove('transition-fade', 'transition-slide', 'transition-zoom', 'transition-none');
+      slide.classList.add('transition-' + transition);
+      if (imageUrl) setSlideImage(documentCopy, slideNumber, imageUrl, imageAlt, placement);
+      code.value = '<!doctype html>\\n' + documentCopy.documentElement.outerHTML;
+      refresh();
+      setStatus('Unsaved');
+      addMessage('assistant', 'Updated slide ' + slideNumber + ' design in the preview.');
+    }
+    function clearSlideImage() {
+      const documentCopy = new DOMParser().parseFromString(code.value, 'text/html');
+      const { slide, slideNumber } = selectedSlide(documentCopy);
+      slide.querySelector('.visual:not(.chart-visual)')?.remove();
+      slide.classList.remove('has-visual', 'visual-left', 'visual-right', 'visual-background', 'visual-full');
+      slide.style.removeProperty('grid-template-columns');
+      slide.style.removeProperty('grid-template-rows');
+      slide.style.removeProperty('align-items');
+      code.value = '<!doctype html>\\n' + documentCopy.documentElement.outerHTML;
+      refresh();
+      setStatus('Unsaved');
+      addMessage('assistant', 'Removed the image from slide ' + slideNumber + '.');
     }
     code.addEventListener('input', () => {
       setStatus('Unsaved');
@@ -246,6 +388,14 @@ export function renderEditorPage(deckId: string): string {
       document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === tab));
       document.querySelectorAll('.pane').forEach((pane) => pane.classList.toggle('active', pane.id === tab.dataset.pane));
     }));
+    document.getElementById('applyDesign').addEventListener('click', () => {
+      try { applyDesign(); } catch (error) { addMessage('assistant', error.message); setStatus('Design failed'); }
+    });
+    document.getElementById('clearImage').addEventListener('click', () => {
+      if (!selectedSlideHasImage()) return;
+      try { clearSlideImage(); } catch (error) { addMessage('assistant', error.message); setStatus('Design failed'); }
+    });
+    document.getElementById('designSlide').addEventListener('input', loadSelectedSlideControls);
     function makeSplitter(splitter, onMove) {
       let dragging = false;
       splitter.addEventListener('pointerdown', (event) => {
@@ -294,6 +444,29 @@ export function renderEditorPage(deckId: string): string {
       try { await api('/save', { method: 'POST', body: JSON.stringify({ html: code.value }) }); setStatus('Draft saved'); }
       catch (error) { setStatus('Save failed'); addMessage('assistant', error.message); }
     });
+    document.getElementById('printPdf').addEventListener('click', () => {
+      setStatus('Opening PDF view');
+      const printableHtml = code.value.replace('</body>', '<script>setTimeout(() => window.print(), 400);<\\/script></body>');
+      const printUrl = URL.createObjectURL(new Blob([printableHtml], { type: 'text/html' }));
+      window.open(printUrl, '_blank', 'noopener');
+      setTimeout(() => URL.revokeObjectURL(printUrl), 60000);
+      setStatus('PDF view opened');
+    });
+    document.getElementById('exportPptx').addEventListener('click', async () => {
+      setStatus('Preparing PPTX');
+      const button = document.getElementById('exportPptx');
+      button.disabled = true;
+      try {
+        await api('/save', { method: 'POST', body: JSON.stringify({ html: code.value }) });
+        window.location.href = '/api/editor/' + encodeURIComponent(deckId) + '/export/pptx' + tokenQuery();
+        setTimeout(() => setStatus('PPTX download started'), 800);
+      } catch (error) {
+        setStatus('PPTX failed');
+        addMessage('assistant', error.message);
+      } finally {
+        button.disabled = false;
+      }
+    });
     document.getElementById('apply').addEventListener('click', async () => {
       const instruction = document.getElementById('instruction');
       const prompt = instruction.value.trim();
@@ -303,7 +476,7 @@ export function renderEditorPage(deckId: string): string {
       setStatus('AI editing');
       document.getElementById('apply').disabled = true;
       try {
-        const data = await api('/ai', { method: 'POST', body: JSON.stringify({ html: code.value, instruction: prompt }) });
+        const data = await api('/ai', { method: 'POST', body: JSON.stringify({ html: code.value, instruction: prompt, selectedSlide: Number(document.getElementById('imageSlide').value) }) });
         code.value = data.html;
         refresh();
         addMessage('assistant', data.summary || 'The requested change is ready in the preview.');
@@ -349,6 +522,18 @@ export function renderEditorPage(deckId: string): string {
   </script>
 </body>
 </html>`;
+}
+
+export function hasRemovableImageInSlideHtml(html: string, slideNumber: number): boolean {
+  const slides = [...html.matchAll(/<article\b[^>]*class=(?:"[^"]*\bslide\b[^"]*"|'[^']*\bslide\b[^']*')[^>]*>[\s\S]*?<\/article>/gi)];
+  const slide = slides[slideNumber - 1]?.[0];
+  if (!slide) return false;
+  return [...slide.matchAll(/<figure\b[^>]*>[\s\S]*?<\/figure>/gi)].some((match) => {
+    const figure = match[0];
+    return /\bclass=(?:"[^"]*\bvisual\b[^"]*"|'[^']*\bvisual\b[^']*')/i.test(figure) &&
+      !/\bclass=(?:"[^"]*\bchart-visual\b[^"]*"|'[^']*\bchart-visual\b[^']*')/i.test(figure) &&
+      /<img\b/i.test(figure);
+  });
 }
 
 function escapeHtml(value: string): string {

@@ -11,6 +11,7 @@ interface ChatOptions {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  timeoutMs?: number;
 }
 
 const ChatCompletionSchema = z.object({
@@ -33,6 +34,7 @@ export class NvidiaClient {
     const model = options.model ?? config.NVIDIA_MODEL_PRIMARY;
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
+      signal: options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         "Content-Type": "application/json",

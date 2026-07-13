@@ -14,19 +14,59 @@ const deckDir = path.join(config.decksDir, deckId);
 const draftPath = path.join(config.editorDraftsDir, `${deckId}.html`);
 const baseHtml = "<!doctype html><html><body><h1>Original title</h1><p>Original copy</p></body></html>";
 const slideHtml = `<!doctype html><html><body>
-<article class="slide transition-slide has-visual visual-left">
+<article class="slide transition-slide has-visual visual-left" data-slide-id="slide-1" aria-label="Slide 1 of 1">
   <div class="content"><h2>Slide one</h2><ul class="bullets"><li>First point</li><li>Second point</li></ul></div>
   <figure class="visual"><img src="/sample.jpg" alt="Sample" /></figure>
 </article>
 </body></html>`;
 let server: Server;
 let baseUrl: string;
+let lastTargetedPrompt = "";
+let lastTargetedUserPayload = "";
 
 class FakeNvidia extends NvidiaClient {
   override async chatText(messages?: { content: string }[]): Promise<string> {
     const prompt = messages?.map((message) => message.content).join("\n") ?? "";
+    const userPayload = messages?.at(-1)?.content ?? "";
     if (prompt.includes("Current slide blocks")) {
+      lastTargetedPrompt = prompt;
+      lastTargetedUserPayload = userPayload;
+      if (userPayload.includes("timeout fallback")) {
+        throw new Error("Simulated model timeout");
+      }
       const article = slideHtml.match(/<article[\s\S]*<\/article>/)?.[0] ?? "";
+      if (userPayload.includes("unsafe patch")) {
+        return JSON.stringify({ slides: [{ slideNumber: 1, html: article.replace("</article>", "<script>alert(1)</script></article>") }] });
+      }
+      if (userPayload.includes("encoded URL")) {
+        return JSON.stringify({ slides: [{ slideNumber: 1, html: article.replace("</article>", '<a href="java&#x73;cript:alert(1)">Open</a></article>') }] });
+      }
+      if (userPayload.includes("extra article")) {
+        return JSON.stringify({ slides: [{ slideNumber: 1, html: `${article}<article class="slide">Injected</article>` }] });
+      }
+      if (userPayload.includes("srcset patch")) {
+        return JSON.stringify({ slides: [{ slideNumber: 1, html: article.replace('<img src="/sample.jpg"', '<img src="/sample.jpg" srcset="https://attacker.example/x.png 2x"') }] });
+      }
+      if (userPayload.includes("one paragraph")) {
+        return JSON.stringify({
+          slides: [{ slideNumber: 1, html: article.replace('<ul class="bullets"><li>First point</li><li>Second point</li></ul>', '<p class="subtitle body-copy">First point. Second point.</p>') }],
+          summary: "Combined slide 1 into one presentation-ready paragraph."
+        });
+      }
+      if (userPayload.includes("https://example.com/logo.png")) {
+        return JSON.stringify({
+          slides: [
+            {
+              slideNumber: 1,
+              html: article.replace(
+                '<figure class="visual"><img src="/sample.jpg" alt="Sample" /></figure>',
+                '<figure class="visual"><img src="https://example.com/logo.png" alt="Example logo" loading="lazy" /></figure>'
+              )
+            }
+          ],
+          summary: "Added and fitted the image on slide 1."
+        });
+      }
       return JSON.stringify({
         slides: [
           {
@@ -103,15 +143,17 @@ describe("deck editor routes", () => {
     const edited = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ html: baseHtml, instruction: "Update the paragraph" })
+      body: JSON.stringify({ html: slideHtml, instruction: "Update the selected slide", selectedSlide: 1 })
     });
-    const editedBody = (await edited.json()) as { html: string };
-    expect(editedBody.html).toContain("AI updated copy");
+    const editedBody = (await edited.json()) as { html: string; saved: boolean };
+    expect(editedBody.html).toContain("AI rewritten point");
+    expect(editedBody.saved).toBe(true);
+    expect(await fs.readFile(draftPath, "utf8")).toBe(editedBody.html);
 
     const upload = await fetch(`${baseUrl}/api/editor/${deckId}/upload`, {
       method: "POST",
       headers: { Authorization: headers.Authorization, "Content-Type": "image/png" },
-      body: Buffer.from([137, 80, 78, 71])
+      body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64")
     });
     const uploadBody = (await upload.json()) as { url: string };
     expect(upload.status).toBe(200);
@@ -123,7 +165,7 @@ describe("deck editor routes", () => {
       body: JSON.stringify({ html: editedBody.html })
     });
     expect(await published.json()).toMatchObject({ ok: true, title: "Original title", notified: false });
-    expect(await fs.readFile(path.join(deckDir, "index.html"), "utf8")).toContain("AI updated copy");
+    expect(await fs.readFile(path.join(deckDir, "index.html"), "utf8")).toContain("AI rewritten point");
     expect((await fs.readdir(path.join(config.editorRevisionsDir, deckId))).length).toBe(1);
   });
 
@@ -161,11 +203,16 @@ describe("deck editor routes", () => {
       })
     });
     const imageBody = (await imageAdded.json()) as { html: string; summary: string };
-    expect(imageBody.summary).toContain("Added image to slide 1");
+    expect(imageBody.summary).toContain("Added and fitted the image");
     expect(imageBody.html).toContain('src="https://example.com/logo.png"');
     expect(imageBody.html).toContain("visual-right");
     expect(imageBody.html).toContain("visual-contain");
     expect(imageBody.html).toContain("object-fit: contain");
+    expect(imageBody.html).toContain("grid-template-columns: minmax(0, 1fr) minmax(220px, .48fr)");
+    expect(lastTargetedPrompt).toContain("Current slide blocks");
+    expect(lastTargetedUserPayload).toContain("<article");
+    expect(lastTargetedUserPayload).not.toContain("<!doctype html>");
+    expect(lastTargetedUserPayload).not.toContain("<html");
 
     const repaired = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
       method: "POST",
@@ -193,5 +240,90 @@ describe("deck editor routes", () => {
     expect(editedBody.html).toContain("AI rewritten point");
     expect(editedBody.html).toContain("<article");
     expect(editedBody.html).toContain("</html>");
+  });
+
+  it("preserves the draft and reports a useful error when the model does not respond", async () => {
+    const headers = {
+      Authorization: `Bearer ${editorTokenFor(deckId)}`,
+      "Content-Type": "application/json"
+    };
+    const edited = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ html: slideHtml, instruction: "redesign slide 1 with a single line alone timeout fallback" })
+    });
+    const editedBody = (await edited.json()) as { error: string };
+    expect(edited.status).toBe(502);
+    expect(editedBody.error).toContain("draft was not changed");
+    expect(await fs.readFile(draftPath, "utf8")).not.toContain("single-line slide");
+  });
+
+  it("converts bullet points into one paragraph through a bounded model patch", async () => {
+    const headers = {
+      Authorization: `Bearer ${editorTokenFor(deckId)}`,
+      "Content-Type": "application/json"
+    };
+    const edited = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        html: slideHtml,
+        instruction: "make slide 1 combined into one paragraph, not point by point"
+      })
+    });
+    const editedBody = (await edited.json()) as { html: string; summary: string };
+    expect(edited.status).toBe(200);
+    expect(editedBody.summary).toContain("one presentation-ready paragraph");
+    expect(editedBody.html).toContain('class="subtitle body-copy"');
+    expect(editedBody.html).toContain("First point. Second point.");
+    expect(editedBody.html).not.toContain('class="bullets"');
+  });
+
+  it("rejects unsafe slide patches without changing the draft", async () => {
+    const headers = {
+      Authorization: `Bearer ${editorTokenFor(deckId)}`,
+      "Content-Type": "application/json"
+    };
+    const before = await fs.readFile(draftPath, "utf8");
+    const edited = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ html: slideHtml, instruction: "make slide 1 unsafe patch" })
+    });
+    const body = (await edited.json()) as { error: string };
+    expect(edited.status).toBe(400);
+    expect(body.error).toMatch(/unsafe|unsupported/i);
+    expect(await fs.readFile(draftPath, "utf8")).toBe(before);
+  });
+
+  it.each(["encoded URL", "extra article", "srcset patch"])("rejects unsafe %s markup", async (instruction) => {
+    const headers = {
+      Authorization: `Bearer ${editorTokenFor(deckId)}`,
+      "Content-Type": "application/json"
+    };
+    const before = await fs.readFile(draftPath, "utf8");
+    const edited = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ html: slideHtml, instruction: `make slide 1 ${instruction}` })
+    });
+    expect(edited.status).toBe(400);
+    expect(await fs.readFile(draftPath, "utf8")).toBe(before);
+  });
+
+  it("requires a target slide instead of sending a full document to the model", async () => {
+    const headers = {
+      Authorization: `Bearer ${editorTokenFor(deckId)}`,
+      "Content-Type": "application/json"
+    };
+    const previousPrompt = lastTargetedPrompt;
+    const edited = await fetch(`${baseUrl}/api/editor/${deckId}/ai`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ html: slideHtml, instruction: "make this more polished" })
+    });
+    expect(edited.status).toBe(400);
+    expect(await edited.json()).toMatchObject({ error: expect.stringContaining("Choose a slide") });
+    expect(lastTargetedPrompt).toBe(previousPrompt);
   });
 });

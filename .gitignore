@@ -4,6 +4,7 @@ dist/
 .env.*
 !.env.example
 data/
+/workspace/
 public/decks/
 slack.manifest.json
 *.log

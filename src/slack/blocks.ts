@@ -36,7 +36,7 @@ const styleOptions: Array<{ text: string; value: BrandStyle }> = [
   { text: "Minimal", value: "minimal" }
 ];
 
-export function startBlocks(prefillTopic?: string): KnownBlock[] {
+export function startBlocks(prefillTopic?: string, workspaceUrl?: string): KnownBlock[] {
   return [
     {
       type: "section",
@@ -61,7 +61,17 @@ export function startBlocks(prefillTopic?: string): KnownBlock[] {
           text: { type: "plain_text", text: "Quick draft" },
           action_id: ACTION_QUICK_DRAFT,
           value: prefillTopic || EMPTY_BUTTON_VALUE
-        }
+        },
+        ...(workspaceUrl
+          ? [
+              {
+                type: "button" as const,
+                text: { type: "plain_text" as const, text: "Data Studio" },
+                url: workspaceUrl,
+                action_id: "open_data_studio"
+              }
+            ]
+          : [])
       ]
     }
   ];
@@ -128,6 +138,24 @@ export function deckWizardModal(metadata: {
         multiline: true,
         placeholder: "Paste rough draft, chat excerpts, meeting notes, PDFs text, customer notes, CSV summary, or any context."
       }),
+      inputText("slack_query", "slack_query", "Slack question or semantic search", true, {
+        multiline: true,
+        placeholder: "Optional: What did the team decide about the release?"
+      }),
+      {
+        type: "input",
+        block_id: "slack_dates",
+        optional: true,
+        label: { type: "plain_text", text: "Slack date range" },
+        element: {
+          type: "plain_text_input",
+          action_id: "slack_dates",
+          placeholder: { type: "plain_text", text: "YYYY-MM-DD to YYYY-MM-DD" }
+        }
+      },
+      inputText("slack_person", "slack_person", "Slack person filter", true, {
+        placeholder: "Optional: name or Slack handle"
+      }),
       inputText("advanced_prompt", "advanced_prompt", "Advanced customization prompt", true, {
         multiline: true,
         placeholder:
@@ -165,6 +193,7 @@ export function finishedBlocks(params: {
   editorUrl: string;
   sourceCount: number;
   assetCount: number;
+  workspaceUrl?: string;
 }): KnownBlock[] {
   return [
     {
@@ -195,7 +224,17 @@ export function finishedBlocks(params: {
           text: { type: "plain_text", text: "Revise deck" },
           action_id: ACTION_OPEN_REVISE,
           value: JSON.stringify({ deckId: params.deckId, publicUrl: params.publicUrl })
-        }
+        },
+        ...(params.workspaceUrl
+          ? [
+              {
+                type: "button" as const,
+                text: { type: "plain_text" as const, text: "Data Studio" },
+                url: params.workspaceUrl,
+                action_id: "open_data_studio"
+              }
+            ]
+          : [])
       ]
     },
     {
@@ -287,8 +326,18 @@ export function parseDeckRequestFromView(view: {
     advancedPrompt: plainTextValue(values, "advanced_prompt", "advanced_prompt"),
     requesterUserId: userId,
     channelId: metadata.channelId,
-    threadTs: metadata.threadTs
+    threadTs: metadata.threadTs,
+    slackResearch: parseSlackResearch(values)
   };
+}
+
+function parseSlackResearch(values: Record<string, Record<string, any>>): DeckRequest["slackResearch"] | undefined {
+  const query = plainTextValue(values, "slack_query", "slack_query");
+  const person = plainTextValue(values, "slack_person", "slack_person");
+  const dateText = plainTextValue(values, "slack_dates", "slack_dates");
+  const match = dateText.match(/(\d{4}-\d{2}-\d{2})\s*(?:to|[-–])\s*(\d{4}-\d{2}-\d{2})/i);
+  if (!query && !person && !match) return undefined;
+  return { query, person, fromDate: match?.[1], toDate: match?.[2] };
 }
 
 export function quickDraftRequest(topic: string, userId: string, channelId?: string, threadTs?: string): DeckRequest {

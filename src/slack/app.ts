@@ -3,7 +3,9 @@ import { App, ExpressReceiver, FileInstallationStore, LogLevel } from "@slack/bo
 import type { WebClient } from "@slack/web-api";
 import { DeckAgent } from "../agent/deckAgent.js";
 import { config } from "../config.js";
+import { workspaceUrlFor } from "../editor/security.js";
 import { logger } from "../logger.js";
+import { importSlackDataFiles } from "../services/slackFiles.js";
 import type { DeckRequest } from "../types.js";
 import {
   ACTION_OPEN_REVISE,
@@ -168,20 +170,49 @@ function registerSlackHandlers(app: App, agent: DeckAgent): void {
     });
   });
 
-  app.event("app_mention", async ({ event, say }) => {
-    const text = cleanSlackText((event as any).text ?? "");
+  app.event("app_mention", async ({ event, say, client, context }) => {
+    const message = event as any;
+    const text = cleanSlackText(message.text ?? "");
+    const files = Array.isArray(message.files) ? message.files : [];
+    if (files.length) {
+      void handleSlackDataFiles({
+        userId: message.user,
+        channelId: message.channel,
+        threadTs: message.thread_ts || message.ts,
+        text,
+        files,
+        client,
+        agent,
+        botToken: context.botToken
+      });
+      return;
+    }
     await say({
-      thread_ts: (event as any).thread_ts || (event as any).ts,
-      blocks: startBlocks(text)
+      thread_ts: message.thread_ts || message.ts,
+      blocks: startBlocks(text, workspaceUrlFor(message.user))
     });
   });
 
-  app.message(async ({ message, say, client }) => {
+  app.message(async ({ message, say, client, context }) => {
     const msg = message as any;
     if (msg.subtype || msg.bot_id || msg.channel_type !== "im") {
       return;
     }
     const text = cleanSlackText(msg.text ?? "");
+    const files = Array.isArray(msg.files) ? msg.files : [];
+    if (files.length) {
+      void handleSlackDataFiles({
+        userId: msg.user,
+        channelId: msg.channel,
+        threadTs: msg.thread_ts || msg.ts,
+        text,
+        files,
+        client,
+        agent,
+        botToken: context.botToken
+      });
+      return;
+    }
     const revision = parseRevisionCommand(text);
     if (revision) {
       await say(`Updating deck ${revision.deckId}. I will post the refreshed link here when it is ready.`);
@@ -195,7 +226,7 @@ function registerSlackHandlers(app: App, agent: DeckAgent): void {
     }
 
     await say({
-      blocks: startBlocks(text)
+      blocks: startBlocks(text, workspaceUrlFor(msg.user))
     });
   });
 
@@ -217,7 +248,7 @@ function registerSlackHandlers(app: App, agent: DeckAgent): void {
                 "Turn Slack context, messy notes, web research, and licensed assets into live presentation websites."
             }
           },
-          ...startBlocks()
+          ...startBlocks(undefined, workspaceUrlFor((event as any).user))
         ]
       }
     });
@@ -226,6 +257,52 @@ function registerSlackHandlers(app: App, agent: DeckAgent): void {
   app.error(async (error) => {
     logger.error({ error }, "Slack app error");
   });
+}
+
+async function handleSlackDataFiles(params: {
+  userId: string;
+  channelId: string;
+  threadTs?: string;
+  text: string;
+  files: any[];
+  client: WebClient;
+  agent: DeckAgent;
+  botToken?: string;
+}): Promise<void> {
+  try {
+    await params.client.chat.postMessage({
+      channel: params.channelId,
+      thread_ts: params.threadTs,
+      text: "I found data files. I am importing them and will post the data deck here."
+    });
+    const dataFiles = await importSlackDataFiles({
+      ownerId: params.userId,
+      files: params.files,
+      token: params.botToken
+    });
+    if (!dataFiles.length) {
+      await params.client.chat.postMessage({
+        channel: params.channelId,
+        thread_ts: params.threadTs,
+        text: "I could not import a supported CSV/XLSX file from that message. Try Data Studio or upload a CSV/XLSX directly."
+      });
+      return;
+    }
+    const request = {
+      ...quickDraftRequest(params.text || `${dataFiles[0]?.name ?? "Uploaded"} data insights`, params.userId, params.channelId, params.threadTs),
+      useSlackContext: true,
+      useWebResearch: false,
+      dataFiles
+    };
+    await generateAndPost({ request, client: params.client, agent: params.agent, botToken: params.botToken });
+  } catch (error) {
+    logger.error({ error }, "Slack data file import failed");
+    await params.client.chat.postMessage({
+      channel: params.channelId,
+      thread_ts: params.threadTs,
+      text: "I could not process the attached data file. Check that it is CSV/XLSX and that the bot can access it."
+    });
+  }
 }
 
 async function generateAndPost(params: {
@@ -262,7 +339,8 @@ async function generateAndPost(params: {
         publicUrl: deck.publicUrl,
         editorUrl: deck.editorUrl,
         sourceCount: deck.sources.length,
-        assetCount: deck.assets.length
+        assetCount: deck.assets.length,
+        workspaceUrl: params.request.requesterUserId ? workspaceUrlFor(params.request.requesterUserId) : undefined
       }),
       text: `${deck.title} is ready: ${deck.publicUrl}`
     });
@@ -309,7 +387,8 @@ async function reviseAndPost(params: {
         publicUrl: deck.publicUrl,
         editorUrl: deck.editorUrl,
         sourceCount: deck.sources.length,
-        assetCount: deck.assets.length
+        assetCount: deck.assets.length,
+        workspaceUrl: params.userId ? workspaceUrlFor(params.userId) : undefined
       }),
       text: `${deck.title} was revised: ${deck.publicUrl}`
     });

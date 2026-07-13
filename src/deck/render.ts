@@ -148,7 +148,20 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     .visual { width: 100%; height: min(58vh, 520px); max-height: 100%; align-self: center; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 88%, var(--accent) 12%); display: grid; place-items: center; overflow: hidden; position: relative; }
     .visual img { width: 100%; height: 100%; object-fit: cover; display: block; filter: saturate(.96) contrast(1.02); }
     .visual.visual-contain img { object-fit: contain; object-position: center; padding: clamp(18px, 4vw, 44px); background: var(--surface); }
+    .visual.visual-embedded { border: 0; background: transparent; }
+    .visual.visual-embedded::after { display: none; }
+    .visual.visual-embedded img { padding: 0; background: transparent; }
     .visual::after { content: ""; position: absolute; inset: auto 0 0 0; height: 8px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+    .visual.chart-visual { border: 0; background: var(--surface); padding: clamp(14px, 2.5vw, 30px); }
+    .visual.chart-visual::after { display: none; }
+    .chart-svg { width: 100%; height: 100%; overflow: visible; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .chart-grid { stroke: color-mix(in srgb, var(--ink) 14%, transparent); stroke-width: 1; }
+    .chart-axis { fill: var(--muted); font-size: 12px; }
+    .chart-value { fill: var(--ink); font-size: 12px; font-weight: 750; }
+    .chart-bar { fill: var(--accent); }
+    .chart-line { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+    .chart-point { fill: var(--accent-2); stroke: var(--surface); stroke-width: 3; }
+    .citation { position: absolute; left: clamp(24px, 5.6vw, 82px); bottom: 14px; max-width: calc(100% - 48px); color: var(--muted); font-size: 12px; line-height: 1.25; overflow-wrap: anywhere; }
     .quote { font-size: clamp(28px, 3.6vw, 56px); line-height: 1.1; border-left: 8px solid var(--accent); padding-left: 28px; overflow-wrap: break-word; }
     .meta { position: fixed; top: 18px; right: 22px; font-size: 13px; color: var(--muted); z-index: 3; }
     .controls { min-width: 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(48px, 1fr) auto; gap: 14px; align-items: center; padding: 12px 18px; background: color-mix(in srgb, var(--bg) 94%, var(--surface)); }
@@ -202,6 +215,7 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
       <div>
         <button id="prev" aria-label="Previous slide">&lsaquo;</button>
         <button id="next" aria-label="Next slide">&rsaquo;</button>
+        <button id="printDeck" aria-label="Print or save as PDF">P</button>
         <button id="toggleNotes" aria-label="Toggle speaker notes">N</button>
         <button id="toggleSources" aria-label="Toggle sources">S</button>
       </div>
@@ -227,6 +241,7 @@ function renderHtml({ deckId, plan, request, assets, sources }: RenderDeckArgs):
     }
     document.getElementById('prev').addEventListener('click', () => show(current - 1));
     document.getElementById('next').addEventListener('click', () => show(current + 1));
+    document.getElementById('printDeck').addEventListener('click', () => window.print());
     document.getElementById('toggleNotes').addEventListener('click', () => notes.classList.toggle('visible'));
     document.getElementById('toggleSources').addEventListener('click', () => sources.classList.toggle('visible'));
     window.addEventListener('keydown', (event) => {
@@ -254,7 +269,7 @@ function renderSlide(
   const titleTag = index === 0 ? "h1" : "h2";
   const bullets = slide.bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("");
   const headingClass = headingSizeClass(slide.title);
-  const visualClass = asset ? visualPlacementClass(asset.placement) : "";
+  const visualClass = asset ? visualPlacementClass(asset.placement) : slide.chart ? "has-visual visual-right" : "";
   const presenters =
     index === 0 && request.presenters.length
       ? `<div class="presenters">${request.presenters.map((presenter) => `<span>${escapeHtml(presenter)}</span>`).join("")}</div>`
@@ -263,22 +278,25 @@ function renderSlide(
     ? `<figure class="visual${shouldContainAsset(asset) ? " visual-contain" : ""}"><img src="${escapeAttribute(asset.thumbnailUrl || asset.url)}" alt="${escapeAttribute(
         asset.title
       )}" loading="lazy" /></figure>`
-    : "";
+    : slide.chart
+      ? `<figure class="visual chart-visual" aria-label="${escapeAttribute(slide.chart.title)}">${renderChart(slide.chart)}</figure>`
+      : "";
   const layoutClass = index === 0 ? "slide-title" : `slide-${slide.layout}`;
   const visualMarkup = visual;
   const notes = escapeAttribute(slide.speakerNotes ?? "");
 
   if (slide.layout === "quote") {
-    return `<article class="slide transition-${transition} ${layoutClass} ${headingClass} ${visualClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
+    return `<article class="slide transition-${transition} ${layoutClass} ${headingClass} ${visualClass}" data-slide-id="slide-${index + 1}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
       <div class="content">
         <div class="kicker">${index + 1} / ${total}</div>
         <blockquote class="quote">${escapeHtml(slide.bullets[0] || slide.title)}</blockquote>
       </div>
       ${visualMarkup}
+      ${slide.dataCitation ? `<footer class="citation">${escapeHtml(slide.dataCitation)}</footer>` : ""}
     </article>`;
   }
 
-  return `<article class="slide transition-${transition} ${layoutClass} ${headingClass} ${visualClass}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
+  return `<article class="slide transition-${transition} ${layoutClass} ${headingClass} ${visualClass}" data-slide-id="slide-${index + 1}" data-notes="${notes}" aria-label="Slide ${index + 1} of ${total}">
     <div class="content">
       <div class="kicker">${index + 1} / ${total}</div>
       <${titleTag}>${escapeHtml(slide.title)}</${titleTag}>
@@ -287,7 +305,57 @@ function renderSlide(
       ${presenters}
     </div>
     ${visualMarkup}
+    ${slide.dataCitation ? `<footer class="citation">${escapeHtml(slide.dataCitation)}</footer>` : ""}
   </article>`;
+}
+
+function renderChart(chart: NonNullable<SlidePlan["chart"]>): string {
+  const width = 720;
+  const height = 420;
+  const left = 54;
+  const right = 24;
+  const top = 28;
+  const bottom = 74;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const max = Math.max(...chart.values, 1);
+  const points = chart.values.map((value, index) => {
+    const x = left + (chart.values.length === 1 ? plotWidth / 2 : (index / (chart.values.length - 1)) * plotWidth);
+    const y = top + plotHeight - (value / max) * plotHeight;
+    return { x, y, value };
+  });
+  const grid = [0, .25, .5, .75, 1]
+    .map((ratio) => {
+      const y = top + plotHeight - ratio * plotHeight;
+      const label = new Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 1 }).format(max * ratio);
+      return `<line class="chart-grid" x1="${left}" x2="${width - right}" y1="${y}" y2="${y}" /><text class="chart-axis" x="${left - 10}" y="${y + 4}" text-anchor="end">${escapeHtml(label)}</text>`;
+    })
+    .join("");
+  const labels = chart.labels
+    .map((label, index) => {
+      const x = points[index]?.x ?? left;
+      const short = label.length > 14 ? `${label.slice(0, 13)}...` : label;
+      return `<text class="chart-axis" x="${x}" y="${height - 34}" text-anchor="middle">${escapeHtml(short)}</text>`;
+    })
+    .join("");
+  const marks =
+    chart.type === "line"
+      ? `<polyline class="chart-line" points="${points.map((point) => `${point.x},${point.y}`).join(" ")}" />${points
+          .map((point) => `<circle class="chart-point" cx="${point.x}" cy="${point.y}" r="6" />`)
+          .join("")}`
+      : points
+          .map((point, index) => {
+            const step = plotWidth / chart.values.length;
+            const barWidth = Math.max(24, step * .62);
+            const barHeight = Math.max(2, top + plotHeight - point.y);
+            return `<rect class="chart-bar" x="${point.x - barWidth / 2}" y="${point.y}" width="${barWidth}" height="${barHeight}" rx="4" /><text class="chart-value" x="${point.x}" y="${point.y - 9}" text-anchor="middle">${escapeHtml(formatChartValue(chart.values[index] ?? 0))}</text>`;
+          })
+          .join("");
+  return `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeAttribute(chart.title)}"><title>${escapeHtml(chart.title)}</title>${grid}${marks}${labels}<text class="chart-axis" x="${width - right}" y="${height - 8}" text-anchor="end">${escapeHtml(chart.valueLabel)}</text></svg>`;
+}
+
+function formatChartValue(value: number): string {
+  return new Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
 function transitionForSlide(request: DeckRequest, index: number): SlideTransition {
